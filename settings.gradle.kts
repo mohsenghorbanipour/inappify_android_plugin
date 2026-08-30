@@ -16,9 +16,16 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
+        maven {
+            name = "JitPack"
+            url = uri("https://jitpack.io")
+            content {
+                includeGroup("com.github.cafebazaar.Poolakey")
+            }
+        }
     }
 }
 
-rootProject.name = "InappifyAndroid"
+rootProject.name = "inappify_android_plugin"
 include(":app")
 include(":sdk")
