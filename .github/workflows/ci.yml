@@ -45,7 +45,7 @@ jobs:
 
       - name: Upload release AAR
         if: startsWith(github.ref, 'refs/tags/')
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: inappify_android_plugin-${{ github.ref_name }}
           path: sdk/build/outputs/aar/sdk-release.aar
