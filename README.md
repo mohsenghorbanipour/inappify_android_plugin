@@ -38,7 +38,7 @@ dependencyResolutionManagement {
         maven("https://jitpack.io") {
             content {
                 includeGroup(
-                    "com.github.mohsenghorbanipour.inappify_android_plugin",
+                    "com.github.mohsenghorbanipour",
                 )
                 includeGroup("com.github.cafebazaar.Poolakey")
             }
@@ -52,7 +52,7 @@ Add the versioned library module:
 ```kotlin
 dependencies {
     implementation(
-        "com.github.mohsenghorbanipour.inappify_android_plugin:" +
+        "com.github.mohsenghorbanipour:" +
             "inappify_android_plugin:v1.0.0",
     )
 }
