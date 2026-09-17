@@ -8,6 +8,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.suspendCancellableCoroutine
 import okhttp3.Call
@@ -27,61 +28,96 @@ import okhttp3.Response
 internal class OkHttpTransport private constructor(
     private val baseUrl: HttpUrl,
     private val client: OkHttpClient,
-) : HttpTransport {
+    unsafeRawHttpLogging: Boolean,
+) : HttpTransport, HttpDiagnosticSource {
 
     private val lifecycleLock = Any()
     private val activeCalls = LinkedHashSet<ActiveCall>()
+    private val diagnosticReporter = HttpDiagnosticReporter(unsafeRawHttpLogging)
 
     @Volatile
     private var closed = false
 
     override suspend fun execute(request: HttpRequest): TransportResult {
+        val startedNanos = System.nanoTime()
         if (closed) {
-            return TransportResult.Failure(TransportFailureKind.CANCELLED)
+            return report(
+                request = request,
+                url = null,
+                result = TransportResult.Failure(TransportFailureKind.CANCELLED),
+                startedNanos = startedNanos,
+            )
         }
 
         val url = baseUrl.resolve(request.path)
-            ?: return TransportResult.Failure(TransportFailureKind.NETWORK)
+            ?: return report(
+                request = request,
+                url = null,
+                result = TransportResult.Failure(TransportFailureKind.NETWORK),
+                startedNanos = startedNanos,
+            )
         val httpRequest = Request.Builder()
             .url(url)
             .header("Accept", JSON_ACCEPT_HEADER)
-            .post(request.jsonBody.toRequestBody(JSON_MEDIA_TYPE))
+            .apply { request.headers.forEach { (name, value) -> header(name, value) } }
+            .method(request.method, if (request.method == "GET") null else
+                request.jsonBody.toRequestBody(JSON_MEDIA_TYPE))
             .build()
         val activeCall = ActiveCall(client.newCall(httpRequest))
 
         return try {
-            activeCall.awaitResponse().use { response ->
-                val responseBody = runInterruptible {
-                    response.readBodyWithinLimit()
+            val result = try {
+                activeCall.awaitResponse().use { response ->
+                    val responseBody = runInterruptible {
+                        response.readBodyWithinLimit()
+                    }
+                    TransportResult.Response(
+                        HttpResponse(
+                            statusCode = response.code,
+                            body = responseBody,
+                            requestId = response.header(REQUEST_ID_HEADER),
+                            contentType = response.header(CONTENT_TYPE_HEADER),
+                            headers = response.headers.names().associateWith { name ->
+                                response.headers.values(name).joinToString(", ")
+                            },
+                        ),
+                    )
                 }
-                TransportResult.Response(
-                    HttpResponse(
-                        statusCode = response.code,
-                        body = responseBody,
-                        requestId = response.header(REQUEST_ID_HEADER),
-                    ),
-                )
-            }
-        } catch (_: ResponseBodyTooLargeException) {
-            TransportResult.Failure(TransportFailureKind.MALFORMED_RESPONSE)
-        } catch (_: RequestCancelledException) {
-            TransportResult.Failure(TransportFailureKind.CANCELLED)
-        } catch (_: SocketTimeoutException) {
-            activeCall.failure(TransportFailureKind.TIMEOUT)
-        } catch (_: InterruptedIOException) {
-            activeCall.failure(TransportFailureKind.TIMEOUT)
-        } catch (_: IOException) {
-            activeCall.failure(TransportFailureKind.NETWORK)
-        } catch (error: IllegalStateException) {
-            if (activeCall.call.isCanceled() || closed) {
+            } catch (_: ResponseBodyTooLargeException) {
+                TransportResult.Failure(TransportFailureKind.MALFORMED_RESPONSE)
+            } catch (_: RequestCancelledException) {
                 TransportResult.Failure(TransportFailureKind.CANCELLED)
-            } else {
-                throw error
+            } catch (_: SocketTimeoutException) {
+                activeCall.failure(TransportFailureKind.TIMEOUT)
+            } catch (_: InterruptedIOException) {
+                activeCall.failure(TransportFailureKind.TIMEOUT)
+            } catch (_: IOException) {
+                activeCall.failure(TransportFailureKind.NETWORK)
+            } catch (error: IllegalStateException) {
+                if (activeCall.call.isCanceled() || closed) {
+                    TransportResult.Failure(TransportFailureKind.CANCELLED)
+                } else {
+                    throw error
+                }
+            } finally {
+                release(activeCall)
             }
-        } finally {
-            release(activeCall)
+            report(request, url, result, startedNanos)
+        } catch (cancellation: CancellationException) {
+            report(
+                request = request,
+                url = url,
+                result = TransportResult.Failure(TransportFailureKind.CANCELLED),
+                startedNanos = startedNanos,
+            )
+            throw cancellation
         }
     }
+
+    override fun addHttpTraceListener(
+        listener: com.inappify.sdk.InappifyHttpTraceListener,
+    ): com.inappify.sdk.InappifyListenerRegistration =
+        diagnosticReporter.addListener(listener)
 
     override fun close() {
         val callsToCancel = synchronized(lifecycleLock) {
@@ -90,8 +126,32 @@ internal class OkHttpTransport private constructor(
             activeCalls.toList()
         }
         callsToCancel.forEach(ActiveCall::cancelAndCloseResponse)
+        diagnosticReporter.close()
         client.connectionPool.evictAll()
         client.cache?.close()
+    }
+
+    private fun report(
+        request: HttpRequest,
+        url: HttpUrl?,
+        result: TransportResult,
+        startedNanos: Long,
+    ): TransportResult {
+        val response = (result as? TransportResult.Response)?.response
+        val failure = (result as? TransportResult.Failure)?.kind
+        diagnosticReporter.report(
+            method = request.method,
+            url = url,
+            unresolvedPath = request.path,
+            requestBody = request.jsonBody,
+            response = response,
+            failure = failure,
+            durationMillis = TimeUnit.NANOSECONDS.toMillis(
+                (System.nanoTime() - startedNanos).coerceAtLeast(0L),
+            ),
+            requestHeaders = request.headers,
+        )
+        return result
     }
 
     private suspend fun ActiveCall.awaitResponse(): Response =
@@ -193,11 +253,15 @@ internal class OkHttpTransport private constructor(
         private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
         private const val JSON_ACCEPT_HEADER = "application/json"
         private const val REQUEST_ID_HEADER = "X-Request-ID"
+        private const val CONTENT_TYPE_HEADER = "Content-Type"
+        private const val HTTP_METHOD = "POST"
         internal const val MAX_RESPONSE_BODY_BYTES = 1024L * 1024L
         private const val PRODUCTION_BASE_URL =
             "https://service.inappify.com/app/v1/"
 
-        internal fun createProduction(): OkHttpTransport =
+        internal fun createProduction(
+            unsafeRawHttpLogging: Boolean = false,
+        ): OkHttpTransport =
             OkHttpTransport(
                 baseUrl = PRODUCTION_BASE_URL.toHttpUrl(),
                 client = OkHttpClient.Builder()
@@ -207,12 +271,14 @@ internal class OkHttpTransport private constructor(
                     .callTimeout(45, TimeUnit.SECONDS)
                     .retryOnConnectionFailure(false)
                     .build(),
+                unsafeRawHttpLogging = unsafeRawHttpLogging,
             )
 
         internal fun create(
             baseUrl: HttpUrl,
             client: OkHttpClient,
-        ): OkHttpTransport = OkHttpTransport(baseUrl, client)
+            unsafeRawHttpLogging: Boolean = false,
+        ): OkHttpTransport = OkHttpTransport(baseUrl, client, unsafeRawHttpLogging)
     }
 }
 

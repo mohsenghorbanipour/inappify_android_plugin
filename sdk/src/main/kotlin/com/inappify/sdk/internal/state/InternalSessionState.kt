@@ -32,6 +32,7 @@ internal class InternalSessionState(
     internal val failedToLoadCustomerInfo: Boolean = false,
     internal val failedToLoadOfferings: Boolean = false,
     internal val revision: Long = 0,
+    internal val storePlatform: String? = null,
 ) {
 
     internal fun toSnapshot(): InappifySnapshot = InappifySnapshot(
@@ -50,6 +51,7 @@ internal class InternalSessionState(
         offerings = offerings,
         failedToLoadCustomerInfo = failedToLoadCustomerInfo,
         failedToLoadOfferings = failedToLoadOfferings,
+        storePlatform = storePlatform,
     )
 
     @Suppress("LongParameterList")
@@ -78,6 +80,7 @@ internal class InternalSessionState(
         failedToLoadCustomerInfo: Boolean = this.failedToLoadCustomerInfo,
         failedToLoadOfferings: Boolean = this.failedToLoadOfferings,
         revision: Long = this.revision,
+        storePlatform: String? = this.storePlatform,
     ): InternalSessionState = InternalSessionState(
         isConfigured = isConfigured,
         isAuthenticated = isAuthenticated,
@@ -103,6 +106,7 @@ internal class InternalSessionState(
         failedToLoadCustomerInfo = failedToLoadCustomerInfo,
         failedToLoadOfferings = failedToLoadOfferings,
         revision = revision,
+        storePlatform = storePlatform,
     )
 
     internal fun toPersistedSession(): PersistedSession = PersistedSession(
@@ -117,6 +121,7 @@ internal class InternalSessionState(
         offeringsJson = offeringsJson,
         customerInfoUpdatedAt = customerInfoUpdatedAt,
         purchaseRecoveryId = purchaseRecoveryId,
+        storePlatform = storePlatform,
     )
 
     override fun toString(): String =
@@ -135,6 +140,7 @@ internal class InternalSessionState(
             "appVersion=$appVersion, " +
             "sdkVersion=$sdkVersion, " +
             "storeInfo=$storeInfo, " +
+            "storePlatform=$storePlatform, " +
             "forceVersion=$forceVersion, " +
             "appId=$appId, " +
             "customerInfoJson=${customerInfoJson.redacted()}, " +
@@ -174,6 +180,7 @@ internal class InternalSessionState(
                 failedToLoadCustomerInfo = false,
                 failedToLoadOfferings = false,
                 revision = 0,
+                storePlatform = null,
             )
     }
 }

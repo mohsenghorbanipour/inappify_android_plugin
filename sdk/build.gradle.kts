@@ -65,6 +65,8 @@ dependencies {
     implementation(libs.gson)
     implementation(libs.okhttp)
     implementation(libs.poolakey)
+    // Lightweight verifier; no global JCA provider is installed or replaced.
+    implementation(libs.bouncycastle)
     testImplementation(libs.junit)
     testImplementation(libs.okhttp.mockwebserver)
     androidTestImplementation(libs.androidx.junit)

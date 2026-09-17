@@ -27,5 +27,12 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "inappify_android_plugin"
-include(":app")
 include(":sdk")
+
+// The private integration harness is not part of the public source distribution.
+if (providers.gradleProperty("includePrivateSample").orNull == "true") {
+    require(file("app/build.gradle.kts").isFile) {
+        "The private integration harness is not available in this checkout."
+    }
+    include(":app")
+}

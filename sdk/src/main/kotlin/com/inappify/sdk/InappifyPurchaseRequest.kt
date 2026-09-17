@@ -3,20 +3,23 @@ package com.inappify.sdk
 /**
  * Immutable request for purchasing one Inappify product.
  *
- * Purchase routing is selected per call through [market]:
- * [InappifyMarket.NONE] skips native
- * billing and calls Inappify directly, while [InappifyMarket.BAZAAR] opens the
- * Bazaar flow for non-trial products.
+ * On the default client, the V1 constructor (no [productType]) preserves the
+ * request's Direct/Bazaar [market] selection. The explicit-product-type V2
+ * constructor uses the server's `storePlatform`, with [market] as fallback
+ * when it is absent. Unsupported server stores fail closed in both cases.
+ * The opt-in Go client always uses its bound server route.
  *
  * [apiKey], [marketKey], [lostPurchaseToken], and [dynamicPriceToken] are
  * sensitive inputs and must never be written to logs, snapshots, errors, or
- * diagnostics. [apiKey] overrides the configured API key only for this
- * purchase request; the private access token still comes from the configured
- * session. [idempotencyKey] is an optional caller-generated correlation value
- * propagated to SDK events. The purchase endpoint does not receive this field
- * and therefore cannot enforce server-side idempotency with it.
+ * diagnostics. Request-level [apiKey], [country], [appVersion], and
+ * [marketKey] overrides apply only to the legacy V1 route. V2 uses the
+ * configured session so a durable operation can resume with the same app and
+ * customer binding. [idempotencyKey] is an optional caller-generated
+ * correlation value propagated to SDK events and used as the V2 encrypted
+ * recovery key. When supplied, it must be unique per logical purchase, 1-128
+ * characters, and contain only letters, digits, `-`, `_`, `.`, or `:`.
  */
-public class InappifyPurchaseRequest @JvmOverloads public constructor(
+public class InappifyPurchaseRequest private constructor(
     public val productIdentifier: String,
     public val offeringIdentifier: String,
     public val packageIdentifier: String? = null,
@@ -33,11 +36,119 @@ public class InappifyPurchaseRequest @JvmOverloads public constructor(
     public val lostPurchaseTime: Long? = null,
     public val idempotencyKey: String? = null,
     public val dynamicPriceToken: String? = null,
+    public val productType: InappifyProductType?,
+    @Suppress("UNUSED_PARAMETER") constructorMarker: Unit,
+    public val paywallId: Long? = null,
+    public val paywallRevision: Long? = null,
 ) {
 
+    /** Adds Direct checkout attribution without changing any V1 constructor signature. */
+    public fun withPaywallAttribution(id: Long, revision: Long): InappifyPurchaseRequest {
+        require(id > 0 && revision > 0) { "Paywall ID and revision must be positive." }
+        return InappifyPurchaseRequest(productIdentifier, offeringIdentifier, packageIdentifier,
+            discountCode, country, appVersion, apiKey, discount, isCrypto, market, marketKey,
+            isLostPurchase, lostPurchaseToken, lostPurchaseTime, idempotencyKey, dynamicPriceToken,
+            productType, Unit, id, revision)
+    }
+
+    /**
+     * Creates the version-one-compatible request shape.
+     *
+     * Bazaar products use IN_APP billing without assuming non-consumable
+     * ownership. On a Bazaar V2 route, a verified delivery response identifies
+     * a consumable; the host must grant it idempotently and confirm delivery,
+     * or register a delivery handler. No automatic grant/consume is implied.
+     * Use the explicit-product-type overload for new integrations, especially
+     * subscriptions, which require subscription billing.
+     */
+    @JvmOverloads
+    public constructor(
+        productIdentifier: String,
+        offeringIdentifier: String,
+        packageIdentifier: String? = null,
+        discountCode: String? = null,
+        country: String? = null,
+        appVersion: String? = null,
+        apiKey: String? = null,
+        discount: Long = 0L,
+        isCrypto: Boolean = false,
+        market: InappifyMarket = InappifyMarket.NONE,
+        marketKey: String? = null,
+        isLostPurchase: Boolean = false,
+        lostPurchaseToken: String? = null,
+        lostPurchaseTime: Long? = null,
+        idempotencyKey: String? = null,
+        dynamicPriceToken: String? = null,
+    ) : this(
+        productIdentifier = productIdentifier,
+        offeringIdentifier = offeringIdentifier,
+        packageIdentifier = packageIdentifier,
+        discountCode = discountCode,
+        country = country,
+        appVersion = appVersion,
+        apiKey = apiKey,
+        discount = discount,
+        isCrypto = isCrypto,
+        market = market,
+        marketKey = marketKey,
+        isLostPurchase = isLostPurchase,
+        lostPurchaseToken = lostPurchaseToken,
+        lostPurchaseTime = lostPurchaseTime,
+        idempotencyKey = idempotencyKey,
+        dynamicPriceToken = dynamicPriceToken,
+        productType = null,
+        constructorMarker = Unit,
+    )
+
+    /**
+     * Creates a store-aware request with an explicit [productType].
+     *
+     * [productType] is the final required parameter so the complete V1
+     * constructor ABI remains available and Java calls with a null third
+     * argument continue to resolve to `packageIdentifier` unambiguously.
+     */
+    public constructor(
+        productIdentifier: String,
+        offeringIdentifier: String,
+        packageIdentifier: String? = null,
+        discountCode: String? = null,
+        country: String? = null,
+        appVersion: String? = null,
+        apiKey: String? = null,
+        discount: Long = 0L,
+        isCrypto: Boolean = false,
+        market: InappifyMarket = InappifyMarket.NONE,
+        marketKey: String? = null,
+        isLostPurchase: Boolean = false,
+        lostPurchaseToken: String? = null,
+        lostPurchaseTime: Long? = null,
+        idempotencyKey: String? = null,
+        dynamicPriceToken: String? = null,
+        productType: InappifyProductType,
+    ) : this(
+        productIdentifier = productIdentifier,
+        offeringIdentifier = offeringIdentifier,
+        packageIdentifier = packageIdentifier,
+        discountCode = discountCode,
+        country = country,
+        appVersion = appVersion,
+        apiKey = apiKey,
+        discount = discount,
+        isCrypto = isCrypto,
+        market = market,
+        marketKey = marketKey,
+        isLostPurchase = isLostPurchase,
+        lostPurchaseToken = lostPurchaseToken,
+        lostPurchaseTime = lostPurchaseTime,
+        idempotencyKey = idempotencyKey,
+        dynamicPriceToken = dynamicPriceToken,
+        productType = productType,
+        constructorMarker = Unit,
+    )
+
     /** Returns a representation that never exposes identifiers or correlation values. */
-    public override fun toString(): String =
-        "InappifyPurchaseRequest(" +
+    public override fun toString(): String {
+        val legacy = "InappifyPurchaseRequest(" +
             "productIdentifier=${productIdentifier.redactedValue()}, " +
             "offeringIdentifier=${offeringIdentifier.redactedValue()}, " +
             "packageIdentifier=${packageIdentifier.redactedValue()}, " +
@@ -53,8 +164,13 @@ public class InappifyPurchaseRequest @JvmOverloads public constructor(
             "lostPurchaseToken=${lostPurchaseToken.redactedValue()}, " +
             "lostPurchaseTime=${lostPurchaseTime.redactedValue()}, " +
             "idempotencyKey=${idempotencyKey.redactedValue()}, " +
-            "dynamicPriceToken=${dynamicPriceToken.redactedValue()}" +
-            ")"
+            "dynamicPriceToken=${dynamicPriceToken.redactedValue()}"
+        return if (productType == null) {
+            "$legacy)"
+        } else {
+            "$legacy, productType=$productType)"
+        }
+    }
 
     public override fun equals(other: Any?): Boolean =
         other is InappifyPurchaseRequest &&
@@ -73,7 +189,8 @@ public class InappifyPurchaseRequest @JvmOverloads public constructor(
             lostPurchaseToken == other.lostPurchaseToken &&
             lostPurchaseTime == other.lostPurchaseTime &&
             idempotencyKey == other.idempotencyKey &&
-            dynamicPriceToken == other.dynamicPriceToken
+            dynamicPriceToken == other.dynamicPriceToken &&
+            productType == other.productType && paywallId == other.paywallId && paywallRevision == other.paywallRevision
 
     public override fun hashCode(): Int {
         var result = productIdentifier.hashCode()
@@ -92,6 +209,9 @@ public class InappifyPurchaseRequest @JvmOverloads public constructor(
         result = 31 * result + (lostPurchaseTime?.hashCode() ?: 0)
         result = 31 * result + (idempotencyKey?.hashCode() ?: 0)
         result = 31 * result + (dynamicPriceToken?.hashCode() ?: 0)
+        if (productType != null) result = 31 * result + productType.hashCode()
+        if (paywallId != null) result = 31 * result + paywallId.hashCode()
+        if (paywallRevision != null) result = 31 * result + paywallRevision.hashCode()
         return result
     }
 }

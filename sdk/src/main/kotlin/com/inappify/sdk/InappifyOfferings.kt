@@ -3,12 +3,29 @@ package com.inappify.sdk
 import com.inappify.sdk.internal.domain.InappifyOfferingResolver
 
 /** Immutable offering collection and its server targeting rules. */
-public class InappifyOfferings public constructor(
-    offerings: List<InappifyOffering>? = null,
-    rules: List<InappifyRule>? = null,
-    public val forceVersion: Long? = null,
-    public val fetchedAt: String? = null,
+public class InappifyOfferings private constructor(
+    offerings: List<InappifyOffering>?,
+    rules: List<InappifyRule>?,
+    public val forceVersion: Long?,
+    public val fetchedAt: String?,
+    public val currentOfferingIdentifier: String?,
+    placements: Map<String, String?>?,
+    internal val usesServerTargeting: Boolean,
 ) {
+
+    /** Original V1 constructor, including its default-argument JVM ABI. */
+    @JvmOverloads
+    public constructor(
+        offerings: List<InappifyOffering>? = null,
+        rules: List<InappifyRule>? = null,
+        forceVersion: Long? = null,
+        fetchedAt: String? = null,
+    ) : this(offerings, rules, forceVersion, fetchedAt, null, null, false)
+
+    /** Go v2 placement mapping; null values deliberately fall back to current/default. */
+    public val placements: Map<String, String?>? = placements?.let {
+        java.util.Collections.unmodifiableMap(LinkedHashMap(it))
+    }
 
     /** Defensive, unmodifiable copy of all available offerings. */
     public val offerings: List<InappifyOffering>? = immutableList(offerings)
@@ -40,7 +57,12 @@ public class InappifyOfferings public constructor(
         context: InappifyOfferingEvaluationContext,
         placement: String? = null,
     ): InappifyOffering? = try {
-        InappifyOfferingResolver.resolve(this, context, placement)
+        if (usesServerTargeting) {
+            val target = placements?.get(placement)
+            offerings?.firstOrNull { target != null && it.identifier == target }
+                ?: offerings?.firstOrNull { currentOfferingIdentifier != null && it.identifier == currentOfferingIdentifier }
+                ?: offerings?.firstOrNull { it.isDefault == true }
+        } else InappifyOfferingResolver.resolve(this, context, placement)
     } catch (_: RuntimeException) {
         null
     }
@@ -83,14 +105,25 @@ public class InappifyOfferings public constructor(
             offerings == other.offerings &&
             rules == other.rules &&
             forceVersion == other.forceVersion &&
-            fetchedAt == other.fetchedAt
+            fetchedAt == other.fetchedAt && currentOfferingIdentifier == other.currentOfferingIdentifier &&
+            placements == other.placements && usesServerTargeting == other.usesServerTargeting
 
     public override fun hashCode(): Int {
         var result = offerings?.hashCode() ?: 0
         result = 31 * result + (rules?.hashCode() ?: 0)
         result = 31 * result + (forceVersion?.hashCode() ?: 0)
         result = 31 * result + (fetchedAt?.hashCode() ?: 0)
+        if (usesServerTargeting) {
+            result = 31 * result + (currentOfferingIdentifier?.hashCode() ?: 0)
+            result = 31 * result + (placements?.hashCode() ?: 0)
+        }
         return result
+    }
+
+    internal companion object {
+        internal fun serverTargeted(offerings: List<InappifyOffering>?, forceVersion: Long?,
+            fetchedAt: String?, current: String?, placements: Map<String, String?>?): InappifyOfferings =
+            InappifyOfferings(offerings, null, forceVersion, fetchedAt, current, placements, true)
     }
 }
 

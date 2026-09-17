@@ -4,6 +4,7 @@
 
 | Version | Supported |
 | --- | --- |
+| 2.x | Yes; see the documented Go/device acceptance limitations |
 | 1.x | Yes |
 | Earlier versions | No |
 

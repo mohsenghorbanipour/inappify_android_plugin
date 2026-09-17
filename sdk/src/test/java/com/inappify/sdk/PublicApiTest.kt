@@ -1,6 +1,7 @@
 package com.inappify.sdk
 
 import android.app.Activity
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -10,6 +11,15 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PublicApiTest {
+
+    @Test
+    fun offeringsRetainsV1JvmConstructors() {
+        val type = InappifyOfferings::class.java
+        assertEquals(InappifyOfferings(), type.getConstructor().newInstance())
+        type.getConstructor(List::class.java, List::class.java, java.lang.Long::class.java, String::class.java)
+        type.getConstructor(List::class.java, List::class.java, java.lang.Long::class.java, String::class.java,
+            Int::class.javaPrimitiveType, Class.forName("kotlin.jvm.internal.DefaultConstructorMarker"))
+    }
 
     @Test
     fun optionsToString_redactsSensitiveValues() {
@@ -53,6 +63,16 @@ class PublicApiTest {
         assertFalse(snapshot.failedToLoadCustomerInfo)
         assertFalse(snapshot.failedToLoadOfferings)
         assertFalse(snapshot.toString().contains("token", ignoreCase = true))
+        assertFalse(snapshot.toString().contains("storePlatform"))
+        assertEquals(
+            "InappifySnapshot(revision=0, isConfigured=false, " +
+                "isAuthenticated=false, appUserIdentifier=null, market=null, " +
+                "country=null, appVersion=null, sdkVersion=test, storeInfo=null, " +
+                "forceVersion=1, appId=null, hasCustomerInfo=false, " +
+                "offeringsCount=0, failedToLoadCustomerInfo=false, " +
+                "failedToLoadOfferings=false)",
+            snapshot.toString(),
+        )
     }
 
     @Test
@@ -142,6 +162,94 @@ class PublicApiTest {
         assertTrue(rendered.contains("discount=15"))
         assertTrue(rendered.contains("market=BAZAAR"))
         assertTrue(rendered.contains("isLostPurchase=true"))
+        assertNull(first.productType)
+    }
+
+    @Test
+    fun purchaseRequest_explicitProductTypeIsAdditiveToTheV1Constructor() {
+        val subscription = InappifyPurchaseRequest(
+            productIdentifier = "premium-monthly",
+            offeringIdentifier = "main",
+            productType = InappifyProductType.SUBSCRIPTION,
+            market = InappifyMarket.BAZAAR,
+        )
+        val legacy = InappifyPurchaseRequest(
+            productIdentifier = "premium-monthly",
+            offeringIdentifier = "main",
+            market = InappifyMarket.BAZAAR,
+        )
+
+        assertEquals(InappifyProductType.SUBSCRIPTION, subscription.productType)
+        assertNull(legacy.productType)
+        assertFalse(subscription.toString().contains("premium-monthly"))
+    }
+
+    @Test
+    fun consumableDeliveryContract_isImmutableValidatedAndRedacted() {
+        val source = mutableListOf(
+            InappifyConsumableDelivery(
+                deliveryId = 91L,
+                productIdentifier = "coins-500",
+                transactionIdentifier = "transaction-secret",
+                source = InappifyDeliverySource.DIRECT,
+            ),
+        )
+        val result = InappifyConsumableSyncResult(
+            discoveredCount = 1,
+            completedCount = 0,
+            pendingDeliveries = source,
+        )
+        source.clear()
+
+        assertEquals(1, result.pendingDeliveries.size)
+        assertFalse(result.pendingDeliveries.single().toString().contains("coins-500"))
+        assertFalse(result.pendingDeliveries.single().toString().contains("91"))
+        assertFalse(result.pendingDeliveries.single().toString().contains("transaction-secret"))
+        assertThrows(UnsupportedOperationException::class.java) {
+            (result.pendingDeliveries as MutableList).clear()
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            InappifyConsumableDelivery(
+                deliveryId = 0L,
+                productIdentifier = "coins",
+                transactionIdentifier = null,
+                source = InappifyDeliverySource.DIRECT,
+            )
+        }
+    }
+
+    @Test
+    fun purchaseRequest_v1ValueSemanticsRemainBytecodeCompatible() {
+        val request = InappifyPurchaseRequest(
+            productIdentifier = "product",
+            offeringIdentifier = "offering",
+            packageIdentifier = "package",
+            discountCode = "discount",
+            country = "IR",
+            appVersion = "1.0.0",
+            apiKey = "api-key",
+            discount = 7L,
+            isCrypto = true,
+            market = InappifyMarket.BAZAAR,
+            marketKey = "market-key",
+            isLostPurchase = true,
+            lostPurchaseToken = "purchase-token",
+            lostPurchaseTime = 123L,
+            idempotencyKey = "attempt",
+            dynamicPriceToken = "price-token",
+        )
+
+        assertEquals(
+            "InappifyPurchaseRequest(" +
+                "productIdentifier=<redacted>, offeringIdentifier=<redacted>, " +
+                "packageIdentifier=<redacted>, discountCode=<redacted>, country=IR, " +
+                "appVersion=1.0.0, apiKey=<redacted>, discount=7, isCrypto=true, " +
+                "market=BAZAAR, marketKey=<redacted>, isLostPurchase=true, " +
+                "lostPurchaseToken=<redacted>, lostPurchaseTime=<redacted>, " +
+                "idempotencyKey=<redacted>, dynamicPriceToken=<redacted>)",
+            request.toString(),
+        )
+        assertEquals(legacyPurchaseRequestHash(request), request.hashCode())
     }
 
     @Test
@@ -184,6 +292,33 @@ class PublicApiTest {
     }
 
     @Test
+    fun purchase_v1ValueSemanticsRemainBytecodeCompatible() {
+        val purchase = InappifyPurchase(
+            attemptId = "attempt",
+            productIdentifier = "product",
+            offeringIdentifier = "offering",
+            market = InappifyMarket.BAZAAR,
+            purchaseStatus = InappifyPurchaseStatus.NEEDTOPAY,
+            packageIdentifier = "package",
+            url = "https://example.invalid/checkout",
+            checkoutId = "checkout",
+            checkoutStatus = "PENDING",
+            nextActionType = "REDIRECT",
+        )
+
+        assertEquals(
+            "InappifyPurchase(" +
+                "attemptId=<redacted>, productIdentifier=<redacted>, " +
+                "offeringIdentifier=<redacted>, packageIdentifier=<redacted>, " +
+                "market=BAZAAR, purchaseStatus=NEEDTOPAY, url=<redacted>, " +
+                "checkoutId=<redacted>, checkoutStatus=PENDING, " +
+                "nextActionType=REDIRECT)",
+            purchase.toString(),
+        )
+        assertEquals(legacyPurchaseHash(purchase), purchase.hashCode())
+    }
+
+    @Test
     fun purchaseStatus_matchesTheNullableBackendContract() {
         assertEquals(
             InappifyPurchaseStatus.DONE,
@@ -193,6 +328,10 @@ class PublicApiTest {
             InappifyPurchaseStatus.NEEDTOPAY,
             InappifyPurchaseStatus.fromServerValue("NEEDTOPAY"),
         )
+        assertEquals(
+            listOf(InappifyPurchaseStatus.DONE, InappifyPurchaseStatus.NEEDTOPAY),
+            InappifyPurchaseStatus.values().toList(),
+        )
         assertNull(InappifyPurchaseStatus.fromServerValue(null))
         listOf("future-state", "NEEDS_PAYMENT", "NEED_TO_PAY", " DONE ", "done")
             .forEach { malformed ->
@@ -200,6 +339,76 @@ class PublicApiTest {
                     InappifyPurchaseStatus.fromServerValue(malformed)
                 }
             }
+    }
+
+    @Test
+    fun storePurchaseStatus_isAdditiveAndParsesEveryV2State() {
+        StorePurchaseStatusFixture.values.forEach { (raw, expected) ->
+            assertEquals(expected, InappifyStorePurchaseStatus.fromServerValue(raw))
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            InappifyStorePurchaseStatus.fromServerValue("done")
+        }
+    }
+
+    @Test
+    fun restoreResult_reportsIndependentOutcomeCounts() {
+        val result = InappifyRestoreResult(
+            restoredCount = 2,
+            alreadyProcessedCount = 3,
+            failedCount = 1,
+        )
+
+        assertEquals(6, result.totalCount)
+        assertEquals(
+            InappifyRestoreResult(2, 3, 1),
+            result,
+        )
+        assertThrows(IllegalArgumentException::class.java) {
+            InappifyRestoreResult(-1, 0, 0)
+        }
+    }
+
+    @Test
+    fun storeV2Extensions_keepCustomV1ClientsCompatible() = runBlocking {
+        val client: InappifyClient = FakeClient()
+
+        val restored = client.restorePurchases()
+            as InappifyResult.Success<InappifyRestoreResult>
+        val confirmation = client.confirmDelivery(42L) as InappifyResult.Failure
+
+        assertEquals(0, restored.data.totalCount)
+        assertSame(client.snapshot, restored.snapshot)
+        assertEquals(
+            InappifyErrorCode.UNSUPPORTED_OPERATION,
+            confirmation.error.code,
+        )
+        assertSame(client.snapshot, confirmation.snapshot)
+    }
+
+    @Test
+    fun httpDiagnosticsExtension_keepsCustomV1ClientsCompatible() {
+        val client: InappifyClient = FakeClient()
+        var callbackCount = 0
+
+        val registration = client.addHttpTraceListener { callbackCount += 1 }
+
+        assertEquals(0, callbackCount)
+        assertFalse(registration.isClosed)
+        registration.close()
+        assertTrue(registration.isClosed)
+    }
+
+    private object StorePurchaseStatusFixture {
+        val values: List<Pair<String, InappifyStorePurchaseStatus>> = listOf(
+            "PROCESSING" to InappifyStorePurchaseStatus.PROCESSING,
+            "COMPLETED" to InappifyStorePurchaseStatus.COMPLETED,
+            "RESTORED" to InappifyStorePurchaseStatus.RESTORED,
+            "ALREADY_PROCESSED" to InappifyStorePurchaseStatus.ALREADY_PROCESSED,
+            "DELIVERY_REQUIRED" to InappifyStorePurchaseStatus.DELIVERY_REQUIRED,
+            "CONSUME_REQUIRED" to InappifyStorePurchaseStatus.CONSUME_REQUIRED,
+            "REJECTED" to InappifyStorePurchaseStatus.REJECTED,
+        )
     }
 
     @Suppress("unused")
@@ -310,5 +519,39 @@ class PublicApiTest {
             InappifyListenerRegistration.create(Runnable {})
 
         override fun close() = Unit
+    }
+
+    private fun legacyPurchaseRequestHash(request: InappifyPurchaseRequest): Int {
+        var result = request.productIdentifier.hashCode()
+        result = 31 * result + request.offeringIdentifier.hashCode()
+        result = 31 * result + (request.packageIdentifier?.hashCode() ?: 0)
+        result = 31 * result + (request.discountCode?.hashCode() ?: 0)
+        result = 31 * result + (request.country?.hashCode() ?: 0)
+        result = 31 * result + (request.appVersion?.hashCode() ?: 0)
+        result = 31 * result + (request.apiKey?.hashCode() ?: 0)
+        result = 31 * result + request.discount.hashCode()
+        result = 31 * result + request.isCrypto.hashCode()
+        result = 31 * result + request.market.hashCode()
+        result = 31 * result + (request.marketKey?.hashCode() ?: 0)
+        result = 31 * result + request.isLostPurchase.hashCode()
+        result = 31 * result + (request.lostPurchaseToken?.hashCode() ?: 0)
+        result = 31 * result + (request.lostPurchaseTime?.hashCode() ?: 0)
+        result = 31 * result + (request.idempotencyKey?.hashCode() ?: 0)
+        result = 31 * result + (request.dynamicPriceToken?.hashCode() ?: 0)
+        return result
+    }
+
+    private fun legacyPurchaseHash(purchase: InappifyPurchase): Int {
+        var result = purchase.attemptId.hashCode()
+        result = 31 * result + purchase.productIdentifier.hashCode()
+        result = 31 * result + purchase.offeringIdentifier.hashCode()
+        result = 31 * result + (purchase.packageIdentifier?.hashCode() ?: 0)
+        result = 31 * result + purchase.market.hashCode()
+        result = 31 * result + (purchase.purchaseStatus?.hashCode() ?: 0)
+        result = 31 * result + (purchase.url?.hashCode() ?: 0)
+        result = 31 * result + (purchase.checkoutId?.hashCode() ?: 0)
+        result = 31 * result + (purchase.checkoutStatus?.hashCode() ?: 0)
+        result = 31 * result + (purchase.nextActionType?.hashCode() ?: 0)
+        return result
     }
 }

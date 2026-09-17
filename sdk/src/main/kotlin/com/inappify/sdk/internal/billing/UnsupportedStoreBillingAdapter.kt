@@ -39,6 +39,23 @@ internal class UnsupportedStoreBillingAdapter(
         return StorePurchaseQueryResult.Failure(unsupportedError)
     }
 
+    override suspend fun consume(purchase: StorePurchase): StoreConsumeResult {
+        if (closed.get()) {
+            return StoreConsumeResult.PermanentFailure(
+                StoreBillingError(
+                    code = StoreBillingErrorCode.ADAPTER_CLOSED,
+                    message = "The store billing adapter is closed.",
+                ),
+            )
+        }
+
+        return if (unsupportedError.isRetryable) {
+            StoreConsumeResult.RetryableFailure(unsupportedError)
+        } else {
+            StoreConsumeResult.PermanentFailure(unsupportedError)
+        }
+    }
+
     override fun close() {
         closed.set(true)
     }

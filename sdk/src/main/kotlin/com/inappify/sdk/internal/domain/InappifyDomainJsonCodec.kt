@@ -224,6 +224,16 @@ internal object InappifyDomainJsonCodec {
         }
         val mergedItems = mergeCurrentOffering(items, current)
 
+        if (source.has("currentOffering") || source.has("placements")) {
+            val placements = source.field("placements")?.takeUnless { it.isJsonNull }
+                ?.requireObject("$path.placements")?.entrySet()?.associate { (key, value) ->
+                    key to if (value.isJsonNull) null else value.requireString("$path.placements")
+                }
+            return InappifyOfferings.serverTargeted(mergedItems,
+                source.long(path, "forceVersion", "force_version"), source.string(path, "fetchedAt", "fetched_at"),
+                source.string(path, "currentOffering"), placements)
+        }
+
         return InappifyOfferings(
             offerings = mergedItems,
             rules = parseObjectList(source.field("rules"), "$path.rules", ::parseRule),
@@ -478,6 +488,12 @@ internal object InappifyDomainJsonCodec {
             add("rules", model.rules.toJsonArray(::encodeRule))
             addLong("forceVersion", model.forceVersion)
             addString("fetchedAt", model.fetchedAt)
+            if (model.usesServerTargeting) {
+                addString("currentOffering", model.currentOfferingIdentifier)
+                add("placements", model.placements?.let { values ->
+                    JsonObject().apply { values.forEach { (key, value) -> addString(key, value) } }
+                } ?: JsonNull.INSTANCE)
+            }
         }
 
     private fun encodeOffering(model: InappifyOffering): JsonObject =
@@ -654,6 +670,11 @@ internal object InappifyDomainJsonCodec {
     private fun JsonElement.requireObject(path: String): JsonObject {
         if (!isJsonObject) fail(path, "must be an object")
         return asJsonObject
+    }
+
+    private fun JsonElement.requireString(path: String): String {
+        if (!isJsonPrimitive || !asJsonPrimitive.isString) fail(path, "must be a string")
+        return asString
     }
 
     /** Fractional values truncate toward zero and must remain Long-bounded. */

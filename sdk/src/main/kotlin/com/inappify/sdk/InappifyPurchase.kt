@@ -7,6 +7,7 @@ public enum class InappifyPurchaseStatus {
 
     /** Additional payment action is required before the checkout can complete. */
     NEEDTOPAY,
+
     ;
 
     internal companion object {
@@ -28,10 +29,12 @@ public enum class InappifyPurchaseStatus {
  * Immutable, token-free result of a purchase attempt.
  *
  * [attemptId] correlates SDK events for one logical attempt. [url] may contain
- * payment-provider state and therefore must not be logged. Store receipts and
- * purchase tokens are deliberately retained only inside the SDK.
+ * payment-provider state and therefore must not be logged. Before opening it,
+ * hosts must validate HTTPS and an explicit Inappify payment-host allowlist;
+ * returning from that URL is only a fulfillment-sync trigger. Store receipts
+ * and purchase tokens are deliberately retained only inside the SDK.
  */
-public class InappifyPurchase @JvmOverloads public constructor(
+public class InappifyPurchase private constructor(
     public val attemptId: String,
     public val productIdentifier: String,
     public val offeringIdentifier: String,
@@ -42,11 +45,52 @@ public class InappifyPurchase @JvmOverloads public constructor(
     public val checkoutId: String? = null,
     public val checkoutStatus: String? = null,
     public val nextActionType: String? = null,
+    /**
+     * Server delivery key for a consumable awaiting idempotent host fulfilment
+     * and [InappifyClient.confirmDelivery].
+     */
+    public val deliveryId: Long?,
+    /** Informational durable verification id; polling is owned by the SDK. */
+    public val verificationRequestId: Long?,
+    /** Whether the server had already processed this store event. */
+    public val alreadyProcessed: Boolean,
+    /** Server-authoritative V2 store workflow status, absent for V1 purchases. */
+    public val storePurchaseStatus: InappifyStorePurchaseStatus?,
 ) {
 
+    /** Version-one-compatible purchase result constructor. */
+    @JvmOverloads
+    public constructor(
+        attemptId: String,
+        productIdentifier: String,
+        offeringIdentifier: String,
+        market: InappifyMarket,
+        purchaseStatus: InappifyPurchaseStatus? = null,
+        packageIdentifier: String? = null,
+        url: String? = null,
+        checkoutId: String? = null,
+        checkoutStatus: String? = null,
+        nextActionType: String? = null,
+    ) : this(
+        attemptId = attemptId,
+        productIdentifier = productIdentifier,
+        offeringIdentifier = offeringIdentifier,
+        market = market,
+        purchaseStatus = purchaseStatus,
+        packageIdentifier = packageIdentifier,
+        url = url,
+        checkoutId = checkoutId,
+        checkoutStatus = checkoutStatus,
+        nextActionType = nextActionType,
+        deliveryId = null,
+        verificationRequestId = null,
+        alreadyProcessed = false,
+        storePurchaseStatus = null,
+    )
+
     /** Returns useful state while redacting correlation, product, checkout, and URL values. */
-    public override fun toString(): String =
-        "InappifyPurchase(" +
+    public override fun toString(): String {
+        val legacy = "InappifyPurchase(" +
             "attemptId=${attemptId.redactedValue()}, " +
             "productIdentifier=${productIdentifier.redactedValue()}, " +
             "offeringIdentifier=${offeringIdentifier.redactedValue()}, " +
@@ -56,8 +100,17 @@ public class InappifyPurchase @JvmOverloads public constructor(
             "url=${url.redactedValue()}, " +
             "checkoutId=${checkoutId.redactedValue()}, " +
             "checkoutStatus=$checkoutStatus, " +
-            "nextActionType=$nextActionType" +
-            ")"
+            "nextActionType=$nextActionType"
+        return if (!hasV2StoreState()) {
+            "$legacy)"
+        } else {
+            "$legacy, " +
+                "hasDeliveryId=${deliveryId != null}, " +
+                "hasVerificationRequestId=${verificationRequestId != null}, " +
+                "alreadyProcessed=$alreadyProcessed, " +
+                "storePurchaseStatus=$storePurchaseStatus)"
+        }
+    }
 
     public override fun equals(other: Any?): Boolean =
         other is InappifyPurchase &&
@@ -70,7 +123,11 @@ public class InappifyPurchase @JvmOverloads public constructor(
             url == other.url &&
             checkoutId == other.checkoutId &&
             checkoutStatus == other.checkoutStatus &&
-            nextActionType == other.nextActionType
+            nextActionType == other.nextActionType &&
+            deliveryId == other.deliveryId &&
+            verificationRequestId == other.verificationRequestId &&
+            alreadyProcessed == other.alreadyProcessed &&
+            storePurchaseStatus == other.storePurchaseStatus
 
     public override fun hashCode(): Int {
         var result = attemptId.hashCode()
@@ -83,6 +140,83 @@ public class InappifyPurchase @JvmOverloads public constructor(
         result = 31 * result + (checkoutId?.hashCode() ?: 0)
         result = 31 * result + (checkoutStatus?.hashCode() ?: 0)
         result = 31 * result + (nextActionType?.hashCode() ?: 0)
+        if (hasV2StoreState()) {
+            result = 31 * result + (deliveryId?.hashCode() ?: 0)
+            result = 31 * result + (verificationRequestId?.hashCode() ?: 0)
+            result = 31 * result + alreadyProcessed.hashCode()
+            result = 31 * result + (storePurchaseStatus?.hashCode() ?: 0)
+        }
         return result
+    }
+
+    private fun hasV2StoreState(): Boolean =
+        deliveryId != null ||
+            verificationRequestId != null ||
+            alreadyProcessed ||
+            storePurchaseStatus != null
+
+    internal companion object {
+        @Suppress("LongParameterList")
+        internal fun storeResult(
+            attemptId: String,
+            productIdentifier: String,
+            offeringIdentifier: String,
+            packageIdentifier: String?,
+            status: InappifyStorePurchaseStatus,
+            deliveryId: Long?,
+            verificationRequestId: Long?,
+            alreadyProcessed: Boolean,
+        ): InappifyPurchase = InappifyPurchase(
+            attemptId = attemptId,
+            productIdentifier = productIdentifier,
+            offeringIdentifier = offeringIdentifier,
+            market = InappifyMarket.BAZAAR,
+            purchaseStatus = when (status) {
+                InappifyStorePurchaseStatus.COMPLETED,
+                InappifyStorePurchaseStatus.RESTORED,
+                InappifyStorePurchaseStatus.ALREADY_PROCESSED,
+                -> InappifyPurchaseStatus.DONE
+
+                InappifyStorePurchaseStatus.PROCESSING,
+                InappifyStorePurchaseStatus.DELIVERY_REQUIRED,
+                InappifyStorePurchaseStatus.CONSUME_REQUIRED,
+                InappifyStorePurchaseStatus.REJECTED,
+                -> null
+            },
+            packageIdentifier = packageIdentifier,
+            url = null,
+            checkoutId = null,
+            checkoutStatus = null,
+            nextActionType = null,
+            deliveryId = deliveryId,
+            verificationRequestId = verificationRequestId,
+            alreadyProcessed = alreadyProcessed,
+            storePurchaseStatus = status,
+        )
+
+        internal fun directDeliveryResult(
+            deliveryId: Long,
+            productIdentifier: String,
+            status: InappifyStorePurchaseStatus,
+        ): InappifyPurchase = InappifyPurchase(
+            attemptId = "direct-delivery-$deliveryId",
+            productIdentifier = productIdentifier,
+            offeringIdentifier = "",
+            market = InappifyMarket.NONE,
+            purchaseStatus = if (status == InappifyStorePurchaseStatus.COMPLETED) {
+                InappifyPurchaseStatus.DONE
+            } else {
+                null
+            },
+            packageIdentifier = null,
+            url = null,
+            checkoutId = null,
+            checkoutStatus = null,
+            nextActionType = null,
+            deliveryId = deliveryId,
+            verificationRequestId = null,
+            alreadyProcessed = false,
+            storePurchaseStatus = status,
+        )
     }
 }

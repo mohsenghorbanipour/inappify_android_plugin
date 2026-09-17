@@ -27,11 +27,50 @@ public class InappifySnapshot internal constructor(
     public val failedToLoadCustomerInfo: Boolean,
     /** Whether the most recent offerings load failed. */
     public val failedToLoadOfferings: Boolean,
+    /** V2 purchase route selected by server-side app configuration. */
+    public val storePlatform: String? = null,
 ) {
 
+    /** Exact version-one JVM constructor retained for binary compatibility. */
+    @Suppress("LongParameterList")
+    internal constructor(
+        revision: Long,
+        isConfigured: Boolean,
+        isAuthenticated: Boolean,
+        appUserIdentifier: String?,
+        market: InappifyMarket?,
+        country: String?,
+        appVersion: String?,
+        sdkVersion: String,
+        storeInfo: String?,
+        forceVersion: Long?,
+        appId: Long?,
+        customerInfo: InappifyCustomerInfo?,
+        offerings: InappifyOfferings?,
+        failedToLoadCustomerInfo: Boolean,
+        failedToLoadOfferings: Boolean,
+    ) : this(
+        revision = revision,
+        isConfigured = isConfigured,
+        isAuthenticated = isAuthenticated,
+        appUserIdentifier = appUserIdentifier,
+        market = market,
+        country = country,
+        appVersion = appVersion,
+        sdkVersion = sdkVersion,
+        storeInfo = storeInfo,
+        forceVersion = forceVersion,
+        appId = appId,
+        customerInfo = customerInfo,
+        offerings = offerings,
+        failedToLoadCustomerInfo = failedToLoadCustomerInfo,
+        failedToLoadOfferings = failedToLoadOfferings,
+        storePlatform = null,
+    )
+
     /** Returns token-free state while redacting the customer identifier. */
-    public override fun toString(): String =
-        "InappifySnapshot(" +
+    public override fun toString(): String {
+        val legacyPrefix = "InappifySnapshot(" +
             "revision=$revision, " +
             "isConfigured=$isConfigured, " +
             "isAuthenticated=$isAuthenticated, " +
@@ -40,7 +79,10 @@ public class InappifySnapshot internal constructor(
             "country=$country, " +
             "appVersion=$appVersion, " +
             "sdkVersion=$sdkVersion, " +
-            "storeInfo=$storeInfo, " +
+            "storeInfo=$storeInfo, "
+        val v2State = if (storePlatform == null) "" else "storePlatform=$storePlatform, "
+        return legacyPrefix +
+            v2State +
             "forceVersion=$forceVersion, " +
             "appId=$appId, " +
             "hasCustomerInfo=${customerInfo != null}, " +
@@ -48,6 +90,7 @@ public class InappifySnapshot internal constructor(
             "failedToLoadCustomerInfo=$failedToLoadCustomerInfo, " +
             "failedToLoadOfferings=$failedToLoadOfferings" +
             ")"
+    }
 
     internal companion object {
 

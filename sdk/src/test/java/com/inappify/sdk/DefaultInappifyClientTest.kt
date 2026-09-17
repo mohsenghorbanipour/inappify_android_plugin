@@ -30,7 +30,10 @@ import com.inappify.sdk.internal.network.ValidateDiscountCodeApiRequest
 import com.inappify.sdk.internal.platform.AppMetadata
 import com.inappify.sdk.internal.platform.AppMetadataProvider
 import com.inappify.sdk.internal.storage.PersistedSession
+import com.inappify.sdk.internal.storage.SessionSaveResult
 import com.inappify.sdk.internal.storage.SessionStateStore
+import com.inappify.sdk.internal.storage.SessionStorageFailure
+import com.inappify.sdk.internal.storage.SessionStorageStage
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
@@ -185,6 +188,169 @@ class DefaultInappifyClientTest {
         assertEquals("cached-token", service.lastRefresh?.token)
         assertTrue(result.snapshot.isAuthenticated)
         assertEquals("09120000000", result.snapshot.appUserIdentifier)
+    }
+
+    @Test
+    fun configure_refetchesBazaarRouteMissingFromAnOlderPersistedSession() = runBlocking {
+        val oldStore = FakeSessionStore()
+        val oldClient = createClient(store = oldStore)
+        configureBazaar(oldClient)
+        oldClient.close()
+
+        val service = FakeService().apply {
+            configureResult = successfulResponse(
+                token = "anonymous-token",
+                identifier = "InaAnonymousId-1",
+                storePlatform = "Bazar",
+            )
+        }
+        val restoredStore = FakeSessionStore(loaded = oldStore.lastSaved)
+        val result = createClient(service, restoredStore).configure(
+            InappifyOptions(
+                apiKey = "mobile-api-key",
+                market = InappifyMarket.BAZAAR,
+                marketKey = "market-key",
+            ),
+        ) as InappifyResult.Success<*>
+
+        assertEquals(1, service.configureCalls)
+        assertEquals(0, service.refreshCalls)
+        assertEquals("Bazar", result.snapshot.storePlatform)
+        assertEquals("InaAnonymousId-1", service.lastConfigure?.appUserIdentifier)
+        assertEquals(oldStore.lastSaved?.purchaseRecoveryId, restoredStore.lastSaved?.purchaseRecoveryId)
+    }
+
+    @Test
+    fun bazaarUpgrade_preservesAnonymousIdentityAndRecoveryBinding() = runBlocking {
+        assertBazaarUpgradeIdentity("InaAnonymousId-existing")
+    }
+
+    @Test
+    fun bazaarUpgrade_preservesLoggedInIdentityAndRecoveryBinding() = runBlocking {
+        assertBazaarUpgradeIdentity("existing-customer")
+    }
+
+    @Test
+    fun bazaarUpgrade_preservesIdentityWhenSessionIsAlreadyInMemory() = runBlocking {
+        val service = FakeService().apply {
+            configureResult = successfulResponse("old-token", "existing-customer")
+        }
+        val store = FakeSessionStore()
+        val client = createClient(service, store)
+        try {
+            configureBazaar(client)
+            val binding = store.lastSaved?.purchaseRecoveryId
+            service.configureResult = successfulResponse("new-token", "existing-customer", storePlatform = "Bazar")
+            configureBazaar(client)
+            assertEquals("existing-customer", service.lastConfigure?.appUserIdentifier)
+            assertEquals("existing-customer", client.snapshot.appUserIdentifier)
+            assertEquals(binding, store.lastSaved?.purchaseRecoveryId)
+        } finally { client.close() }
+    }
+
+    @Test
+    fun bazaarUpgrade_networkFailureRetainsOldSessionForRetry() = runBlocking {
+        val old = legacyBazaarSession("existing-customer")
+        val store = FakeSessionStore(loaded = old)
+        val service = FakeService().apply {
+            configureResult = ServiceResult.Failure(ServiceFailureKind.NETWORK)
+        }
+        val client = createClient(service, store)
+        try {
+            val failed = client.configure(bazaarUpgradeOptions()) as InappifyResult.Failure
+            assertEquals(InappifyErrorCode.NETWORK, failed.error.code)
+            assertEquals(0, store.saveCalls)
+            assertEquals(0, store.clearCalls)
+            assertEquals("existing-customer", service.lastConfigure?.appUserIdentifier)
+            service.configureResult = successfulResponse("new-token", "existing-customer", storePlatform = "Bazar")
+            assertTrue(client.configure(bazaarUpgradeOptions()) is InappifyResult.Success)
+            assertEquals("existing-customer", service.lastConfigure?.appUserIdentifier)
+            assertEquals(old.purchaseRecoveryId, store.lastSaved?.purchaseRecoveryId)
+        } finally { client.close() }
+    }
+
+    @Test
+    fun bazaarUpgrade_rejectsServerIdentityChangeWithoutOverwritingOldSession() = runBlocking {
+        val store = FakeSessionStore(loaded = legacyBazaarSession("existing-customer"))
+        val service = FakeService().apply {
+            configureResult = successfulResponse("new-token", "InaAnonymousId-wrong", storePlatform = "Bazar")
+        }
+        val client = createClient(service, store)
+        try {
+            val result = client.configure(bazaarUpgradeOptions()) as InappifyResult.Failure
+            assertEquals(InappifyErrorCode.MALFORMED_RESPONSE, result.error.code)
+            assertFalse(client.snapshot.isConfigured)
+            assertEquals(0, store.saveCalls)
+            assertEquals(0, store.clearCalls)
+        } finally { client.close() }
+    }
+
+    @Test
+    fun bazaarUpgrade_doesNotTransferIdentityAcrossApiKeys() = runBlocking {
+        val store = FakeSessionStore(loaded = legacyBazaarSession("existing-customer"))
+        val service = FakeService().apply {
+            configureResult = successfulResponse("other-app-token", "InaAnonymousId-other", storePlatform = "Bazar")
+        }
+        val client = createClient(service, store, purchaseRecoveryIdProvider = { "new-app-binding" })
+        try {
+            assertTrue(client.configure(bazaarUpgradeOptions(apiKey = "another-api-key")) is InappifyResult.Success)
+            assertNull(service.lastConfigure?.appUserIdentifier)
+            assertEquals("InaAnonymousId-other", client.snapshot.appUserIdentifier)
+            assertEquals("new-app-binding", store.lastSaved?.purchaseRecoveryId)
+        } finally { client.close() }
+    }
+
+    @Test
+    fun bazaarUpgrade_explicitDifferentCustomerDoesNotInheritOldBinding() = runBlocking {
+        val store = FakeSessionStore(loaded = legacyBazaarSession("existing-customer"))
+        val service = FakeService().apply {
+            configureResult = successfulResponse("other-token", "other-customer", storePlatform = "Bazar")
+        }
+        val client = createClient(service, store, purchaseRecoveryIdProvider = { "new-customer-binding" })
+        try {
+            assertTrue(client.configure(bazaarUpgradeOptions(identifier = "other-customer")) is InappifyResult.Success)
+            assertEquals("other-customer", service.lastConfigure?.appUserIdentifier)
+            assertEquals("new-customer-binding", store.lastSaved?.purchaseRecoveryId)
+        } finally { client.close() }
+    }
+
+    private fun bazaarUpgradeOptions(
+        apiKey: String = "mobile-api-key",
+        identifier: String? = null,
+    ) = InappifyOptions(apiKey = apiKey, appUserIdentifier = identifier,
+        market = InappifyMarket.BAZAAR, marketKey = "market-key")
+
+    private suspend fun legacyBazaarSession(identifier: String): PersistedSession {
+        val store = FakeSessionStore()
+        val client = createClient(FakeService().apply {
+            configureResult = successfulResponse("old-token", identifier)
+        }, store)
+        try {
+            configureBazaar(client)
+            return requireNotNull(store.lastSaved).also { assertNull(it.storePlatform) }
+        } finally { client.close() }
+    }
+
+    private suspend fun assertBazaarUpgradeIdentity(identifier: String) {
+        val old = legacyBazaarSession(identifier)
+        val service = FakeService().apply {
+            configureResult = successfulResponse("new-token", identifier, storePlatform = "Bazar")
+        }
+        val store = FakeSessionStore(loaded = old)
+        val client = createClient(service, store, purchaseRecoveryIdProvider = { "must-not-replace-binding" })
+        try {
+            assertTrue(client.configure(bazaarUpgradeOptions()) is InappifyResult.Success)
+            assertEquals(identifier, service.lastConfigure?.appUserIdentifier)
+            assertEquals(identifier, client.snapshot.appUserIdentifier)
+            assertEquals(!identifier.startsWith("InaAnonymousId-"), client.snapshot.isAuthenticated)
+            assertEquals(old.purchaseRecoveryId, store.lastSaved?.purchaseRecoveryId)
+            assertEquals(1, service.configureCalls)
+            assertEquals(0, service.refreshCalls)
+            service.refreshResult = successfulResponseWithoutToken(identifier)
+            assertTrue(client.configure(bazaarUpgradeOptions()) is InappifyResult.Success)
+            assertEquals(1, service.configureCalls)
+            assertEquals(1, service.refreshCalls)
+        } finally { client.close() }
     }
 
     @Test
@@ -826,8 +992,47 @@ class DefaultInappifyClientTest {
             assertTrue(client.snapshot.isConfigured)
             assertEquals(true, result.error.details["stateApplied"])
             assertEquals(true, result.error.details["staleSessionCleared"])
+            assertEquals("UNKNOWN", result.error.details["storageStage"])
             assertEquals(1, store.clearCalls)
         }
+
+    @Test
+    fun secureStorageFailure_exposesSafeStageAndSizeDiagnostics() = runBlocking {
+        val service = FakeService()
+        val store = FakeSessionStore(
+            saveFailure = SessionStorageFailure(
+                stage = SessionStorageStage.ENCRYPT,
+                causeType = "java.security.ProviderException",
+                rootCauseType = "android.security.KeyStoreException",
+                causeMessage = "Keystore operation failed",
+                plainTextBytes = 81_920,
+                encryptedBytes = null,
+                sessionFileExists = true,
+                keyResetAttempted = false,
+            ),
+        )
+        val client = createClient(service, store)
+
+        val result = client.configure(
+            InappifyOptions(apiKey = "mobile-api-key"),
+        ) as InappifyResult.Failure
+
+        assertEquals(InappifyErrorCode.STORE_UNAVAILABLE, result.error.code)
+        assertEquals("ENCRYPT", result.error.details["storageStage"])
+        assertEquals(
+            "java.security.ProviderException",
+            result.error.details["causeType"],
+        )
+        assertEquals(
+            "android.security.KeyStoreException",
+            result.error.details["rootCauseType"],
+        )
+        assertEquals("Keystore operation failed", result.error.details["causeMessage"])
+        assertEquals(81_920, result.error.details["plainTextBytes"])
+        assertEquals(true, result.error.details["sessionFileExists"])
+        assertEquals(false, result.error.details["keyResetAttempted"])
+        assertFalse(result.error.details.toString().contains("mobile-api-key"))
+    }
 
     @Test
     fun operationsAreSerialized() = runBlocking {
@@ -2322,9 +2527,13 @@ class DefaultInappifyClientTest {
             "server",
             result.snapshot?.customerInfo?.attributes?.single()?.key,
         )
-        repeat(100) {
-            if (service.offeringsCalls >= 2) return@repeat
+        var refreshWaits = 0
+        while (
+            client.snapshot.offerings?.offerings?.singleOrNull()?.identifier != "refreshed" &&
+            refreshWaits < 500
+        ) {
             delay(10)
+            refreshWaits += 1
         }
         assertTrue(service.offeringsCalls >= 2)
         assertEquals("refreshed", client.snapshot.offerings?.offerings?.single()?.identifier)
@@ -2646,6 +2855,7 @@ class DefaultInappifyClientTest {
         storeInfo: String? = null,
         forceVersion: Long? = 1L,
         appId: Long? = null,
+        storePlatform: String? = null,
     ): ServiceResult.Response = ServiceResult.Response(
         statusCode = 200,
         payload = backendResponse(
@@ -2655,6 +2865,7 @@ class DefaultInappifyClientTest {
             storeInfo = storeInfo,
             forceVersion = forceVersion,
             appId = appId,
+            storePlatform = storePlatform,
         ),
         requestId = "request-1",
     )
@@ -2698,6 +2909,7 @@ class DefaultInappifyClientTest {
         storeInfo: String? = null,
         forceVersion: Long? = null,
         appId: Long? = null,
+        storePlatform: String? = null,
     ): BackendResponse = BackendResponse(
         status = status,
         message = null,
@@ -2710,6 +2922,7 @@ class DefaultInappifyClientTest {
         storeInfo = storeInfo,
         appId = appId,
         forceVersion = forceVersion,
+        storePlatform = storePlatform,
     )
 
     private fun persistedSession(
@@ -3026,6 +3239,7 @@ class DefaultInappifyClientTest {
     private inner class FakeSessionStore(
         private val loaded: PersistedSession? = null,
         private val saveSucceeds: Boolean = true,
+        private val saveFailure: SessionStorageFailure? = null,
     ) : SessionStateStore {
         var lastSaved: PersistedSession? = null
         var saveCalls = 0
@@ -3037,6 +3251,16 @@ class DefaultInappifyClientTest {
             lastSaved = session
             saveCalls += 1
             return saveSucceeds
+        }
+
+        override suspend fun saveWithDiagnostics(
+            session: PersistedSession,
+        ): SessionSaveResult {
+            val diagnostic = saveFailure
+                ?: return super.saveWithDiagnostics(session)
+            lastSaved = session
+            saveCalls += 1
+            return SessionSaveResult.Failure(diagnostic)
         }
 
         override suspend fun clear(): Boolean {

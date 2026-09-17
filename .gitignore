@@ -40,3 +40,9 @@ google-services.json
 
 # macOS
 .DS_Store
+
+# Private integration harness and local engineering notes (never publish).
+/app/
+/SAMPLE_APP.md
+/sample-config.properties.example
+[Aa][Gg][Ee][Nn][Tt][Ss].[Mm][Dd]

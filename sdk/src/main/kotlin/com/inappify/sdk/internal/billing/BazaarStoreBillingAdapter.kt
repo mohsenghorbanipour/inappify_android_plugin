@@ -7,6 +7,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import ir.cafebazaar.poolakey.Connection
 import ir.cafebazaar.poolakey.Payment
+import ir.cafebazaar.poolakey.callback.ConsumeCallback
 import ir.cafebazaar.poolakey.callback.PurchaseQueryCallback
 import ir.cafebazaar.poolakey.config.PaymentConfiguration
 import ir.cafebazaar.poolakey.config.SecurityCheck
@@ -25,15 +26,17 @@ import kotlin.coroutines.resume
 internal class BazaarStoreBillingAdapter(
     applicationContext: Context,
     rsaPublicKey: String,
-) : StoreBillingAdapter {
+) : StoreBillingAdapter, PartialStorePurchaseQueryAdapter {
     private val applicationContext: Context = applicationContext.applicationContext
     private val paymentConfiguration = PaymentConfiguration(SecurityCheck.Enable(rsaPublicKey))
     private val mainHandler = Handler(Looper.getMainLooper())
     private val purchaseMutex = Mutex()
     private val queryMutex = Mutex()
+    private val consumeMutex = Mutex()
     private val closed = AtomicBoolean(false)
     private val activePurchase = AtomicReference<ActivePurchase?>(null)
     private val activeQuery = AtomicReference<ActivePurchaseQuery?>(null)
+    private val activeConsume = AtomicReference<ActiveConsume?>(null)
 
     override suspend fun purchase(
         uiHost: StoreUiHost,
@@ -73,13 +76,41 @@ internal class BazaarStoreBillingAdapter(
         productType: StoreProductType,
     ): StorePurchaseQueryResult = queryMutex.withLock {
         if (closed.get()) return@withLock closedQueryResult()
-        executePurchaseQuery(productType)
+        executePurchaseQuery(
+            productType = productType,
+            mode = StorePurchaseQueryMode.STRICT,
+        )
+    }
+
+    override suspend fun queryPurchasesPartially(
+        productType: StoreProductType,
+    ): StorePurchaseQueryResult = queryMutex.withLock {
+        if (closed.get()) return@withLock closedQueryResult()
+        executePurchaseQuery(
+            productType = productType,
+            mode = StorePurchaseQueryMode.PARTIAL,
+        )
+    }
+
+    override suspend fun consume(
+        purchase: StorePurchase,
+    ): StoreConsumeResult = consumeMutex.withLock {
+        if (closed.get()) return@withLock closedConsumeResult()
+        if (purchase.purchaseToken.isEmpty()) {
+            return@withLock consumeFailure(
+                code = StoreBillingErrorCode.INVALID_PURCHASE_DATA,
+                message = "Cafe Bazaar purchase evidence does not contain a consume token.",
+                isRetryable = false,
+            )
+        }
+        executeConsume(purchase.purchaseToken)
     }
 
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
         activePurchase.get()?.complete(closedResult())
         activeQuery.get()?.complete(closedQueryResult())
+        activeConsume.get()?.complete(closedConsumeResult())
     }
 
     private suspend fun executePurchase(
@@ -105,17 +136,36 @@ internal class BazaarStoreBillingAdapter(
 
     private suspend fun executePurchaseQuery(
         productType: StoreProductType,
+        mode: StorePurchaseQueryMode,
     ): StorePurchaseQueryResult {
         val connectionLease = ConnectionLease(mainHandler)
 
         return try {
             awaitPurchaseQuery(
                 productType = productType,
+                mode = mode,
                 connectionLease = connectionLease,
             )
         } finally {
             // A query owns a fresh Payment and Connection. Releasing that exact connection here
             // prevents callbacks from one recovery attempt leaking into a later attempt.
+            connectionLease.disconnectExactlyOnce()
+        }
+    }
+
+    private suspend fun executeConsume(
+        purchaseToken: String,
+    ): StoreConsumeResult {
+        val connectionLease = ConnectionLease(mainHandler)
+
+        return try {
+            awaitConsume(
+                purchaseToken = purchaseToken,
+                connectionLease = connectionLease,
+            )
+        } finally {
+            // Consumption owns a fresh Payment and Connection. The token is deliberately kept
+            // inside this adapter and is never included in cleanup diagnostics.
             connectionLease.disconnectExactlyOnce()
         }
     }
@@ -312,6 +362,7 @@ internal class BazaarStoreBillingAdapter(
 
     private suspend fun awaitPurchaseQuery(
         productType: StoreProductType,
+        mode: StorePurchaseQueryMode,
         connectionLease: ConnectionLease,
     ): StorePurchaseQueryResult = suspendCancellableCoroutine { continuation ->
         val purchasePages = mutableListOf<PurchaseInfo>()
@@ -374,6 +425,7 @@ internal class BazaarStoreBillingAdapter(
                                                     purchasePages.distinctBy {
                                                         it.purchaseToken
                                                     },
+                                                    mode = mode,
                                                 ),
                                             )
                                         }
@@ -465,6 +517,124 @@ internal class BazaarStoreBillingAdapter(
         }
     }
 
+    private suspend fun awaitConsume(
+        purchaseToken: String,
+        connectionLease: ConnectionLease,
+    ): StoreConsumeResult = suspendCancellableCoroutine { continuation ->
+        val operation = ActiveConsume(
+            continuation = continuation,
+            onTerminal = { completed -> activeConsume.compareAndSet(completed, null) },
+        )
+
+        if (!activeConsume.compareAndSet(null, operation)) {
+            operation.complete(
+                consumeFailure(
+                    code = StoreBillingErrorCode.PURCHASE_IN_PROGRESS,
+                    message = "Another Cafe Bazaar consume operation is already in progress.",
+                    isRetryable = true,
+                ),
+            )
+            return@suspendCancellableCoroutine
+        }
+
+        continuation.invokeOnCancellation {
+            operation.cancel()
+            connectionLease.disconnectExactlyOnce()
+        }
+
+        if (closed.get()) {
+            operation.complete(closedConsumeResult())
+            return@suspendCancellableCoroutine
+        }
+
+        val posted = mainHandler.post {
+            if (!operation.isActive || closed.get()) {
+                operation.complete(closedConsumeResult())
+                return@post
+            }
+
+            try {
+                val payment = Payment(applicationContext, paymentConfiguration)
+                val connection = payment.connect {
+                    connectionSucceed {
+                        if (!operation.isActive || closed.get()) {
+                            operation.complete(closedConsumeResult())
+                            return@connectionSucceed
+                        }
+
+                        val consumeCallback: ConsumeCallback.() -> Unit = {
+                            consumeSucceed {
+                                operation.complete(StoreConsumeResult.Success)
+                            }
+                            consumeFailed { throwable ->
+                                operation.complete(
+                                    consumeFailureFromThrowable(
+                                        code = StoreBillingErrorCode.CONSUME_FAILED,
+                                        message = "Cafe Bazaar did not consume the purchase.",
+                                        throwable = throwable,
+                                        isRetryable = true,
+                                    ),
+                                )
+                            }
+                        }
+
+                        try {
+                            payment.consumeProduct(purchaseToken, consumeCallback)
+                        } catch (throwable: Exception) {
+                            operation.complete(
+                                consumeFailureFromThrowable(
+                                    code = StoreBillingErrorCode.CONSUME_FAILED,
+                                    message = "Cafe Bazaar could not start purchase consumption.",
+                                    throwable = throwable,
+                                    isRetryable = true,
+                                ),
+                            )
+                        }
+                    }
+                    connectionFailed { throwable ->
+                        operation.complete(
+                            consumeFailureFromThrowable(
+                                code = StoreBillingErrorCode.CONNECTION_FAILED,
+                                message = "The Cafe Bazaar billing service is unavailable.",
+                                throwable = throwable,
+                                isRetryable = true,
+                            ),
+                        )
+                    }
+                    disconnected {
+                        operation.complete(
+                            consumeFailure(
+                                code = StoreBillingErrorCode.CONNECTION_LOST,
+                                message = "The Cafe Bazaar billing connection was interrupted.",
+                                isRetryable = true,
+                            ),
+                        )
+                    }
+                }
+                connectionLease.attach(connection)
+            } catch (throwable: Exception) {
+                operation.complete(
+                    consumeFailureFromThrowable(
+                        code = StoreBillingErrorCode.CONNECTION_FAILED,
+                        message = "The Cafe Bazaar billing service is unavailable.",
+                        throwable = throwable,
+                        isRetryable = true,
+                    ),
+                )
+            }
+        }
+
+        if (!posted) {
+            operation.complete(
+                consumeFailure(
+                    code = StoreBillingErrorCode.MAIN_THREAD_UNAVAILABLE,
+                    message = "The Android main thread is unavailable for billing.",
+                    isRetryable = true,
+                ),
+            )
+        }
+    }
+
     private fun validatePurchase(
         purchaseInfo: PurchaseInfo,
         requestedProductIdentifier: String?,
@@ -521,8 +691,10 @@ internal class BazaarStoreBillingAdapter(
 
     private fun validateQueriedPurchases(
         purchaseInfos: List<PurchaseInfo>,
+        mode: StorePurchaseQueryMode,
     ): StorePurchaseQueryResult {
         val purchases = ArrayList<StorePurchase>(purchaseInfos.size)
+        var invalidPurchaseCount = 0
         for (purchaseInfo in purchaseInfos) {
             when (
                 val validation = validatePurchase(
@@ -531,17 +703,29 @@ internal class BazaarStoreBillingAdapter(
                 )
             ) {
                 is StoreBillingResult.Success -> purchases += validation.purchase
-                is StoreBillingResult.Failure ->
-                    return StorePurchaseQueryResult.Failure(validation.error)
-                StoreBillingResult.Cancelled ->
-                    return queryFailure(
-                        code = StoreBillingErrorCode.INVALID_PURCHASE_DATA,
-                        message = "Cafe Bazaar returned invalid purchase evidence.",
-                    )
+                is StoreBillingResult.Failure -> {
+                    if (mode == StorePurchaseQueryMode.STRICT) {
+                        return StorePurchaseQueryResult.Failure(validation.error)
+                    }
+                    invalidPurchaseCount += 1
+                }
+
+                StoreBillingResult.Cancelled -> {
+                    if (mode == StorePurchaseQueryMode.STRICT) {
+                        return queryFailure(
+                            code = StoreBillingErrorCode.INVALID_PURCHASE_DATA,
+                            message = "Cafe Bazaar returned invalid purchase evidence.",
+                        )
+                    }
+                    invalidPurchaseCount += 1
+                }
             }
         }
 
-        return StorePurchaseQueryResult.Success(purchases.toList())
+        return StorePurchaseQueryResult.Success(
+            purchases = purchases.toList(),
+            invalidPurchaseCount = invalidPurchaseCount,
+        )
     }
 
     private class ActivePurchase(
@@ -575,6 +759,27 @@ internal class BazaarStoreBillingAdapter(
             get() = !terminal.get() && continuation.isActive
 
         fun complete(result: StorePurchaseQueryResult) {
+            if (!terminal.compareAndSet(false, true)) return
+            onTerminal(this)
+            if (continuation.isActive) continuation.resume(result)
+        }
+
+        fun cancel() {
+            if (!terminal.compareAndSet(false, true)) return
+            onTerminal(this)
+        }
+    }
+
+    private class ActiveConsume(
+        private val continuation: CancellableContinuation<StoreConsumeResult>,
+        private val onTerminal: (ActiveConsume) -> Unit,
+    ) {
+        private val terminal = AtomicBoolean(false)
+
+        val isActive: Boolean
+            get() = !terminal.get() && continuation.isActive
+
+        fun complete(result: StoreConsumeResult) {
             if (!terminal.compareAndSet(false, true)) return
             onTerminal(this)
             if (continuation.isActive) continuation.resume(result)
@@ -694,6 +899,12 @@ internal class BazaarStoreBillingAdapter(
             message = "The Cafe Bazaar billing adapter is closed.",
         )
 
+        private fun closedConsumeResult(): StoreConsumeResult = consumeFailure(
+            code = StoreBillingErrorCode.ADAPTER_CLOSED,
+            message = "The Cafe Bazaar billing adapter is closed.",
+            isRetryable = false,
+        )
+
         private fun uiHostDestroyedResult(): StoreBillingResult = failure(
             code = StoreBillingErrorCode.UI_HOST_DESTROYED,
             message = "The billing UI host was destroyed before the purchase completed.",
@@ -751,5 +962,41 @@ internal class BazaarStoreBillingAdapter(
                 causeType = throwable::class.java.name,
             ),
         )
+
+        private fun consumeFailure(
+            code: StoreBillingErrorCode,
+            message: String,
+            isRetryable: Boolean,
+        ): StoreConsumeResult {
+            val error = StoreBillingError(
+                code = code,
+                message = message,
+                isRetryable = isRetryable,
+            )
+            return if (isRetryable) {
+                StoreConsumeResult.RetryableFailure(error)
+            } else {
+                StoreConsumeResult.PermanentFailure(error)
+            }
+        }
+
+        private fun consumeFailureFromThrowable(
+            code: StoreBillingErrorCode,
+            message: String,
+            throwable: Throwable,
+            isRetryable: Boolean,
+        ): StoreConsumeResult {
+            val error = StoreBillingError(
+                code = code,
+                message = message,
+                isRetryable = isRetryable,
+                causeType = throwable::class.java.name,
+            )
+            return if (isRetryable) {
+                StoreConsumeResult.RetryableFailure(error)
+            } else {
+                StoreConsumeResult.PermanentFailure(error)
+            }
+        }
     }
 }

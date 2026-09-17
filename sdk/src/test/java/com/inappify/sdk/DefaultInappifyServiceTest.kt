@@ -2,10 +2,14 @@ package com.inappify.sdk
 
 import com.google.gson.JsonParser
 import com.inappify.sdk.internal.network.ConfigureApiRequest
+import com.inappify.sdk.internal.network.ConsumableDeliveriesServiceResult
+import com.inappify.sdk.internal.network.ConsumableDeliverySource
 import com.inappify.sdk.internal.network.DefaultInappifyService
+import com.inappify.sdk.internal.network.DirectConsumableDeliveryApiRequest
 import com.inappify.sdk.internal.network.LoginApiRequest
 import com.inappify.sdk.internal.network.LogoutApiRequest
 import com.inappify.sdk.internal.network.OkHttpTransport
+import com.inappify.sdk.internal.network.PendingConsumableDeliveriesApiRequest
 import com.inappify.sdk.internal.network.PurchaseApiRequest
 import com.inappify.sdk.internal.network.RemoveAttributesApiRequest
 import com.inappify.sdk.internal.network.RefreshSessionApiRequest
@@ -13,6 +17,15 @@ import com.inappify.sdk.internal.network.ResourceApiRequest
 import com.inappify.sdk.internal.network.ServiceFailureKind
 import com.inappify.sdk.internal.network.ServiceResult
 import com.inappify.sdk.internal.network.StoreAttributesApiRequest
+import com.inappify.sdk.internal.network.StoreConsumeResult
+import com.inappify.sdk.internal.network.StoreConsumeResultApiRequest
+import com.inappify.sdk.internal.network.StoreDeliveryApiRequest
+import com.inappify.sdk.internal.network.StorePurchaseApiRequest
+import com.inappify.sdk.internal.network.StorePurchaseEvidence
+import com.inappify.sdk.internal.network.StorePurchaseOperation
+import com.inappify.sdk.internal.network.StorePurchaseStatus
+import com.inappify.sdk.internal.network.StoreServiceResult
+import com.inappify.sdk.internal.network.StoreVerificationStatusApiRequest
 import com.inappify.sdk.internal.network.StoreReservedAttributeApiRequest
 import com.inappify.sdk.internal.network.SyncAttributesApiRequest
 import com.inappify.sdk.internal.network.ValidateDiscountCodeApiRequest
@@ -30,6 +43,24 @@ import org.junit.Test
 
 class DefaultInappifyServiceTest {
 
+    @Test
+    fun storeBackpressureDecodesHeaderEvenWithoutJson() = runBlocking {
+        server.enqueue(MockResponse().setResponseCode(503).setHeader("Retry-After", "120"))
+        val result = service.getStoreVerificationStatus(StoreVerificationStatusApiRequest("key", "customer-token", 77)) as StoreServiceResult.Response
+        assertEquals(503, result.statusCode)
+        assertEquals(120L, result.retryAfterSeconds)
+    }
+
+    @Test
+    fun directPurchaseIncludesOnlyExplicitPaywallAttribution() = runBlocking {
+        server.enqueue(MockResponse().setResponseCode(200).setBody("""{"status":true,"data":{"purchaseStatus":"DONE"}}"""))
+        service.purchase(PurchaseApiRequest("key", "token", "com.example", "IR", "product", "default",
+            null, 0, false, 4, "2.0.0", null, paywallId = 15, paywallRevision = 3))
+        val json = JsonParser.parseString(server.takeRequest().body.readUtf8()).asJsonObject
+        assertEquals(15, json.get("paywallId").asInt)
+        assertEquals(3, json.get("paywallRevision").asInt)
+    }
+
     private lateinit var server: MockWebServer
     private lateinit var service: DefaultInappifyService
 
@@ -43,6 +74,8 @@ class DefaultInappifyServiceTest {
                 client = OkHttpClient(),
             ),
             purchasePath = "purchase",
+            storeApiBaseUrl = server.url("/app/v2/store/").toString(),
+            directApiBaseUrl = server.url("/app/v1/").toString(),
         )
     }
 
@@ -67,6 +100,7 @@ class DefaultInappifyServiceTest {
                         "originalAppUserId": "InaAnonymousId-1"
                       },
                       "storeInfo": "bazar",
+                      "storePlatform": "Bazar",
                       "appId": 19,
                       "forceVersion": 5
                     }
@@ -109,8 +143,109 @@ class DefaultInappifyServiceTest {
         assertEquals("anonymous-token", result.payload.token)
         assertEquals("InaAnonymousId-1", result.payload.appUserIdentifier)
         assertEquals("bazar", result.payload.storeInfo)
+        assertEquals("Bazar", result.payload.storePlatform)
         assertEquals(19L, result.payload.appId)
         assertEquals(5L, result.payload.forceVersion)
+    }
+
+    @Test
+    fun configure_normalizesBackendNumericStorePlatforms() = runBlocking {
+        listOf(
+            1L to "DirectIos",
+            2L to "DirectAndroid",
+            3L to "DirectWeb",
+            5L to "PlayStore",
+            6L to "AppStore",
+            10L to "Bazar",
+            11L to "MyKet",
+            12L to "SibApp",
+        ).forEach { (wireValue, expectedRoute) ->
+            server.enqueue(
+                MockResponse().setResponseCode(200).setBody(
+                    """
+                    {
+                      "status": true,
+                      "token": "customer-token",
+                      "customerInfo": {
+                        "originalAppUserId": "customer-1"
+                      },
+                      "storePlatform": $wireValue,
+                      "appId": 3,
+                      "forceVersion": 1
+                    }
+                    """.trimIndent(),
+                ),
+            )
+
+            val result = service.configure(
+                ConfigureApiRequest(
+                    apiKey = "mobile-api-key",
+                    packageIdentifier = "com.example.host",
+                    appUserIdentifier = "customer-1",
+                    versionName = "3.4.7",
+                    versionCode = 4034,
+                ),
+            ) as ServiceResult.Response
+
+            assertEquals("customer-token", result.payload.token)
+            assertEquals("customer-1", result.payload.appUserIdentifier)
+            assertEquals(expectedRoute, result.payload.storePlatform)
+            assertEquals(3L, result.payload.appId)
+            assertEquals(1L, result.payload.forceVersion)
+        }
+    }
+
+    @Test
+    fun configure_acceptsUnknownNumericStorePlatformAsMissing() = runBlocking {
+        server.enqueue(
+            MockResponse().setResponseCode(200).setBody(
+                """{"status":true,"storePlatform":99}""",
+            ),
+        )
+
+        val result = service.configure(
+            ConfigureApiRequest(
+                apiKey = "mobile-api-key",
+                packageIdentifier = "com.example.host",
+                appUserIdentifier = null,
+                versionName = "3.4.7",
+                versionCode = 4034,
+            ),
+        ) as ServiceResult.Response
+
+        assertNull(result.payload.storePlatform)
+    }
+
+    @Test
+    fun configure_rejectsMalformedLegacyStorePlatformValues() = runBlocking {
+        val malformedValues = listOf(
+            "true",
+            "{}",
+            "[]",
+            "2.5",
+            "-1",
+            "9223372036854775808",
+        )
+
+        malformedValues.forEach { malformedValue ->
+            server.enqueue(
+                MockResponse().setResponseCode(200).setBody(
+                    """{"status":true,"storePlatform":$malformedValue}""",
+                ),
+            )
+
+            val result = service.configure(
+                ConfigureApiRequest(
+                    apiKey = "key",
+                    packageIdentifier = "com.example.host",
+                    appUserIdentifier = null,
+                    versionName = "1.0.0",
+                    versionCode = 1,
+                ),
+            ) as ServiceResult.Failure
+
+            assertEquals(ServiceFailureKind.MALFORMED_RESPONSE, result.kind)
+        }
     }
 
     @Test
@@ -894,6 +1029,585 @@ class DefaultInappifyServiceTest {
         appVersion = "1.0.0",
         purchaseStoreTime = null,
     )
+
+    @Test
+    fun pendingConsumables_usesV1ContractAndToleratesNullableFutureFields() = runBlocking {
+        server.enqueue(
+            MockResponse().setResponseCode(200).setBody(
+                """
+                {
+                  "status": true,
+                  "data": {
+                    "deliveries": [{
+                      "deliveryId": 81,
+                      "status": "DELIVERY_REQUIRED",
+                      "source": "direct",
+                      "paymentId": null,
+                      "transactionId": null,
+                      "productIdentifier": "coins-100",
+                      "alreadyDelivered": false,
+                      "consumeAttempts": null,
+                      "futureField": {"ignored": true}
+                    }],
+                    "nextCursor": "ignored"
+                  }
+                }
+                """.trimIndent(),
+            ),
+        )
+
+        val result = service.getPendingConsumableDeliveries(
+            PendingConsumableDeliveriesApiRequest(
+                apiKey = "mobile-api-key",
+                token = "customer-token",
+            ),
+        ) as ConsumableDeliveriesServiceResult.Response
+        val request = server.takeRequest()
+        val json = JsonParser.parseString(request.body.readUtf8()).asJsonObject
+
+        assertEquals("POST", request.method)
+        assertEquals("/app/v1/consumable-deliveries/pending", request.path)
+        assertEquals(setOf("apikey", "token"), json.keySet())
+        assertEquals("mobile-api-key", json["apikey"].asString)
+        assertEquals("customer-token", json["token"].asString)
+        val delivery = result.payload.deliveries.single()
+        assertEquals(81L, delivery.deliveryId)
+        assertEquals(StorePurchaseStatus.DELIVERY_REQUIRED, delivery.status)
+        assertEquals(ConsumableDeliverySource.DIRECT, delivery.source)
+        assertEquals("coins-100", delivery.productIdentifier)
+        assertNull(delivery.paymentId)
+        assertNull(delivery.transactionId)
+        assertNull(delivery.consumeAttempts)
+        assertFalse(delivery.alreadyDelivered ?: true)
+    }
+
+    @Test
+    fun directDelivered_usesSameDeliveryIdAndDecodesCompletedState() = runBlocking {
+        server.enqueue(
+            MockResponse().setResponseCode(200).setBody(
+                """
+                {
+                  "status": true,
+                  "data": {
+                    "deliveryId": 82,
+                    "status": "COMPLETED",
+                    "source": "direct",
+                    "paymentId": 900,
+                    "transactionId": "transaction-82",
+                    "productIdentifier": "coins-500",
+                    "alreadyDelivered": true,
+                    "consumeAttempts": 0
+                  }
+                }
+                """.trimIndent(),
+            ),
+        )
+
+        val result = service.markDirectConsumableDelivered(
+            DirectConsumableDeliveryApiRequest(
+                apiKey = "mobile-api-key",
+                token = "customer-token",
+                deliveryId = 82L,
+            ),
+        ) as ConsumableDeliveriesServiceResult.Response
+        val request = server.takeRequest()
+        val json = JsonParser.parseString(request.body.readUtf8()).asJsonObject
+
+        assertEquals("/app/v1/consumable-deliveries/82/delivered", request.path)
+        assertEquals(setOf("apikey", "token"), json.keySet())
+        val delivery = result.payload.deliveries.single()
+        assertEquals(82L, delivery.deliveryId)
+        assertEquals(StorePurchaseStatus.COMPLETED, delivery.status)
+        assertTrue(delivery.alreadyDelivered == true)
+    }
+
+    @Test
+    fun pendingConsumables_rejectsIncompatibleDeliveryContract() = runBlocking {
+        listOf(
+            """{"status":true,"data":{"deliveries":[{"deliveryId":1,"status":"CONSUME_REQUIRED","source":"direct","productIdentifier":"coins"}]}}""",
+            """{"status":true,"data":{"deliveries":[{"deliveryId":1,"status":"DELIVERY_REQUIRED","source":"unknown","productIdentifier":"coins"}]}}""",
+        ).forEach { body ->
+            server.enqueue(MockResponse().setResponseCode(200).setBody(body))
+
+            val decoded = service.getPendingConsumableDeliveries(
+                PendingConsumableDeliveriesApiRequest("key", "token"),
+            )
+            server.takeRequest()
+
+            if (body.contains("unknown")) {
+                assertTrue(decoded is ConsumableDeliveriesServiceResult.Failure)
+            } else {
+                val response = decoded as ConsumableDeliveriesServiceResult.Response
+                assertEquals(StorePurchaseStatus.CONSUME_REQUIRED, response.payload.deliveries.single().status)
+            }
+        }
+    }
+
+    @Test
+    fun pendingConsumables_preservesHttpErrorAndBoundedRetryAfter() = runBlocking {
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(429)
+                .setHeader("Retry-After", "7")
+                .setBody(
+                    """{"status":false,"errorCode":"RATE_LIMITED","message":"Retry later."}""",
+                ),
+        )
+
+        val result = service.getPendingConsumableDeliveries(
+            PendingConsumableDeliveriesApiRequest("key", "token"),
+        ) as ConsumableDeliveriesServiceResult.Response
+
+        assertEquals(429, result.statusCode)
+        assertEquals(7L, result.retryAfterSeconds)
+        assertEquals("RATE_LIMITED", result.payload.errorCode)
+        assertTrue(result.payload.deliveries.isEmpty())
+    }
+
+    @Test
+    fun submitStorePurchase_usesV2ContractAndDecodesNestedProcessingState() = runBlocking {
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setHeader("X-Request-ID", "store-purchase-request")
+                .setBody(
+                    """
+                    {
+                      "status": true,
+                      "data": {
+                        "purchase": {
+                          "status": "PROCESSING",
+                          "paymentId": null,
+                          "eventId": null,
+                          "alreadyProcessed": false,
+                          "deliveryId": null,
+                          "verificationRequestId": 731,
+                          "retryAfter": 2,
+                          "errorCode": null,
+                          "message": null
+                        },
+                        "hasForceUpdate": false,
+                        "forceVersion": 2
+                      }
+                    }
+                    """.trimIndent(),
+                ),
+        )
+
+        val apiRequest = fullStorePurchaseRequest()
+        val result = service.submitStorePurchase(apiRequest) as StoreServiceResult.Response
+        val request = server.takeRequest()
+        val json = JsonParser.parseString(request.body.readUtf8()).asJsonObject
+        val purchase = json["purchase"].asJsonObject
+
+        assertEquals("POST", request.method)
+        assertEquals("/app/v2/store/purchases", request.path)
+        assertEquals(
+            setOf(
+                "apikey",
+                "token",
+                "appIdentifier",
+                "productIdentifier",
+                "offeringIdentifier",
+                "country",
+                "appVersion",
+                "forceVersion",
+                "operation",
+                "purchase",
+            ),
+            json.keySet(),
+        )
+        assertEquals("mobile-api-key", json["apikey"].asString)
+        assertEquals("customer-token", json["token"].asString)
+        assertEquals("com.example.host", json["appIdentifier"].asString)
+        assertEquals("premium-monthly", json["productIdentifier"].asString)
+        assertEquals("main", json["offeringIdentifier"].asString)
+        assertEquals("IR", json["country"].asString)
+        assertEquals("3.4.6", json["appVersion"].asString)
+        assertEquals(9L, json["forceVersion"].asLong)
+        assertEquals("purchase", json["operation"].asString)
+        assertEquals(
+            setOf(
+                "token",
+                "purchaseTime",
+                "orderId",
+                "packageName",
+                "developerPayload",
+                "originalJson",
+                "signature",
+            ),
+            purchase.keySet(),
+        )
+        assertEquals("store-token-secret", purchase["token"].asString)
+        assertEquals(1_725_000_000_000L, purchase["purchaseTime"].asLong)
+        assertEquals("order-secret", purchase["orderId"].asString)
+        assertEquals("com.example.host", purchase["packageName"].asString)
+        assertEquals("payload-secret", purchase["developerPayload"].asString)
+        assertEquals("raw-json-secret", purchase["originalJson"].asString)
+        assertEquals("signature-secret", purchase["signature"].asString)
+
+        assertEquals("store-purchase-request", result.requestId)
+        assertTrue(result.payload.status == true)
+        assertFalse(result.payload.hasForceUpdate ?: true)
+        assertEquals(2L, result.payload.forceVersion)
+        assertEquals(StorePurchaseStatus.PROCESSING, result.payload.state?.status)
+        assertEquals(731L, result.payload.state?.verificationRequestId)
+        assertEquals(2L, result.payload.state?.retryAfter)
+        assertFalse(result.payload.state?.alreadyProcessed ?: true)
+        assertNull(result.payload.state?.paymentId)
+        assertNull(result.payload.state?.deliveryId)
+
+        val printable = apiRequest.toString() + result.payload.toString()
+        listOf(
+            "mobile-api-key",
+            "customer-token",
+            "store-token-secret",
+            "payload-secret",
+            "raw-json-secret",
+            "signature-secret",
+        ).forEach { secret -> assertFalse(printable.contains(secret)) }
+    }
+
+    @Test
+    fun submitStoreRestore_omitsAbsentOptionalFields() = runBlocking {
+        server.enqueue(
+            MockResponse().setResponseCode(200).setBody(
+                """
+                {
+                  "status": true,
+                  "data": {"purchase": {"status": "RESTORED"}},
+                  "hasForceUpdate": false
+                }
+                """.trimIndent(),
+            ),
+        )
+
+        val result = service.submitStorePurchase(
+            StorePurchaseApiRequest(
+                apiKey = "key",
+                token = "customer",
+                appIdentifier = "com.example.host",
+                productIdentifier = "lifetime",
+                offeringIdentifier = "main",
+                country = "IR",
+                appVersion = "1.0.0",
+                forceVersion = null,
+                operation = StorePurchaseOperation.RESTORE,
+                purchase = StorePurchaseEvidence(
+                    token = "owned-token",
+                    purchaseTime = null,
+                    orderId = null,
+                    packageName = null,
+                    developerPayload = null,
+                    originalJson = null,
+                    signature = null,
+                ),
+            ),
+        ) as StoreServiceResult.Response
+        val json = JsonParser.parseString(
+            server.takeRequest().body.readUtf8(),
+        ).asJsonObject
+
+        assertFalse(json.has("forceVersion"))
+        assertEquals("restore", json["operation"].asString)
+        assertEquals(setOf("token"), json["purchase"].asJsonObject.keySet())
+        assertEquals(StorePurchaseStatus.RESTORED, result.payload.state?.status)
+    }
+
+    @Test
+    fun getStoreVerificationStatus_decodesEveryV2StatusFromFlatData() = runBlocking {
+        StorePurchaseStatus.values().forEachIndexed { index, expectedStatus ->
+            val errorFields = if (expectedStatus == StorePurchaseStatus.REJECTED) {
+                """, "errorCode":"INVALID_PURCHASE", "message":"Rejected""""
+            } else {
+                """, "errorCode":null, "message":null"""
+            }
+            server.enqueue(
+                MockResponse().setResponseCode(200).setBody(
+                    """
+                    {
+                      "status": true,
+                      "data": {
+                        "status": "${expectedStatus.wireValue}",
+                        "paymentId": 401,
+                        "eventId": 402,
+                        "deliveryId": 403,
+                        "verificationRequestId": 404,
+                        "retryAfter": 0,
+                        "alreadyProcessed": ${expectedStatus == StorePurchaseStatus.ALREADY_PROCESSED}
+                        $errorFields
+                      }
+                    }
+                    """.trimIndent(),
+                ),
+            )
+
+            val result = service.getStoreVerificationStatus(
+                StoreVerificationStatusApiRequest(
+                    apiKey = "key",
+                    token = "customer",
+                    verificationRequestId = 700L + index,
+                ),
+            ) as StoreServiceResult.Response
+            val request = server.takeRequest()
+            val requestJson = JsonParser.parseString(
+                request.body.readUtf8(),
+            ).asJsonObject
+
+            assertEquals(
+                "/app/v2/store/verifications/${700L + index}/status",
+                request.path,
+            )
+            assertEquals(setOf("apikey", "token"), requestJson.keySet())
+            assertEquals(expectedStatus, result.payload.state?.status)
+            assertEquals(401L, result.payload.state?.paymentId)
+            assertEquals(402L, result.payload.state?.eventId)
+            assertEquals(403L, result.payload.state?.deliveryId)
+            assertEquals(404L, result.payload.state?.verificationRequestId)
+            assertEquals(0L, result.payload.state?.retryAfter)
+            if (expectedStatus == StorePurchaseStatus.REJECTED) {
+                assertEquals("INVALID_PURCHASE", result.payload.state?.errorCode)
+                assertEquals("Rejected", result.payload.state?.message)
+            }
+        }
+    }
+
+    @Test
+    fun storeApi_rejectsMalformedSuccessfulContracts() = runBlocking {
+        val malformedPollingBodies = listOf(
+            """{"data":{"status":"PROCESSING"}}""",
+            """{"status":"true","data":{"status":"PROCESSING"}}""",
+            """{"status":true,"data":null}""",
+            """{"status":true,"data":[]}""",
+            """{"status":true,"data":{"status":"UNKNOWN"}}""",
+            """{"status":true,"data":{"status":1}}""",
+            """{"status":true,"data":{"status":"PROCESSING","retryAfter":2.5}}""",
+            """{"status":true,"data":{"status":"PROCESSING","retryAfter":-1}}""",
+            """{"status":true,"data":{"status":"COMPLETED","paymentId":"41"}}""",
+            """{"status":true,"data":{"status":"COMPLETED","paymentId":0}}""",
+            """{"status":true,"data":{"status":"COMPLETED","eventId":-1}}""",
+            """{"status":true,"data":{"status":"DELIVERY_REQUIRED","deliveryId":0}}""",
+            """{"status":true,"data":{"status":"PROCESSING","verificationRequestId":-1}}""",
+            """{"status":true,"data":{"status":"COMPLETED","alreadyProcessed":"false"}}""",
+            """{"status":true,"hasForceUpdate":"false","data":{"status":"COMPLETED"}}""",
+            """{"status":true,"forceVersion":2.0,"data":{"status":"COMPLETED"}}""",
+            """{"status":true,"data":{"status":"COMPLETED","hasForceUpdate":"false"}}""",
+            """{"status":true,"data":{"status":"COMPLETED","forceVersion":2.0}}""",
+        )
+
+        malformedPollingBodies.forEach { body ->
+            server.enqueue(MockResponse().setResponseCode(200).setBody(body))
+            val result = service.getStoreVerificationStatus(
+                StoreVerificationStatusApiRequest(
+                    apiKey = "key",
+                    token = "customer",
+                    verificationRequestId = 91,
+                ),
+            ) as StoreServiceResult.Failure
+            server.takeRequest()
+
+            assertEquals(ServiceFailureKind.MALFORMED_RESPONSE, result.kind)
+        }
+
+        server.enqueue(
+            MockResponse().setResponseCode(200).setBody(
+                """{"status":true,"data":{"status":"PROCESSING"}}""",
+            ),
+        )
+        val wrongInitialShape = service.submitStorePurchase(
+            fullStorePurchaseRequest(),
+        ) as StoreServiceResult.Failure
+
+        assertEquals(ServiceFailureKind.MALFORMED_RESPONSE, wrongInitialShape.kind)
+    }
+
+    @Test
+    fun deliveryAndConsume_useExactBodiesAndAcceptNestedOrFlatState() = runBlocking {
+        server.enqueue(
+            MockResponse().setResponseCode(200).setBody(
+                """
+                {
+                  "status": true,
+                  "data": {
+                    "purchase": {
+                      "status": "CONSUME_REQUIRED",
+                      "deliveryId": 51
+                    }
+                  }
+                }
+                """.trimIndent(),
+            ),
+        )
+        server.enqueue(
+            MockResponse().setResponseCode(200).setBody(
+                """
+                {
+                  "status": true,
+                  "data": {
+                    "status": "COMPLETED",
+                    "paymentId": 61,
+                    "eventId": 62,
+                    "deliveryId": 51
+                  }
+                }
+                """.trimIndent(),
+            ),
+        )
+        server.enqueue(
+            MockResponse().setResponseCode(200).setBody(
+                """
+                {
+                  "status": true,
+                  "data": {
+                    "purchase": {
+                      "status": "CONSUME_REQUIRED",
+                      "deliveryId": 52,
+                      "retryAfter": 4
+                    }
+                  }
+                }
+                """.trimIndent(),
+            ),
+        )
+
+        val delivered = service.markStoreDeliveryDelivered(
+            StoreDeliveryApiRequest(
+                apiKey = "key",
+                token = "customer",
+                deliveryId = 51,
+            ),
+        ) as StoreServiceResult.Response
+        val deliveredRequest = server.takeRequest()
+        val deliveredJson = JsonParser.parseString(
+            deliveredRequest.body.readUtf8(),
+        ).asJsonObject
+
+        assertEquals("/app/v2/store/deliveries/51/delivered", deliveredRequest.path)
+        assertEquals(setOf("apikey", "token"), deliveredJson.keySet())
+        assertEquals(StorePurchaseStatus.CONSUME_REQUIRED, delivered.payload.state?.status)
+
+        val consumed = service.reportStoreConsumeResult(
+            StoreConsumeResultApiRequest(
+                apiKey = "key",
+                token = "customer",
+                deliveryId = 51,
+                result = StoreConsumeResult.SUCCEEDED,
+                errorCode = null,
+            ),
+        ) as StoreServiceResult.Response
+        val consumedRequest = server.takeRequest()
+        val consumedJson = JsonParser.parseString(
+            consumedRequest.body.readUtf8(),
+        ).asJsonObject
+
+        assertEquals(
+            "/app/v2/store/deliveries/51/consume-result",
+            consumedRequest.path,
+        )
+        assertEquals(setOf("apikey", "token", "result"), consumedJson.keySet())
+        assertEquals("succeeded", consumedJson["result"].asString)
+        assertEquals(StorePurchaseStatus.COMPLETED, consumed.payload.state?.status)
+        assertEquals(61L, consumed.payload.state?.paymentId)
+
+        val consumeFailed = service.reportStoreConsumeResult(
+            StoreConsumeResultApiRequest(
+                apiKey = "key",
+                token = "customer",
+                deliveryId = 52,
+                result = StoreConsumeResult.FAILED,
+                errorCode = "STORE_TEMPORARILY_UNAVAILABLE",
+            ),
+        ) as StoreServiceResult.Response
+        val failedRequest = server.takeRequest()
+        val failedJson = JsonParser.parseString(
+            failedRequest.body.readUtf8(),
+        ).asJsonObject
+
+        assertEquals(
+            setOf("apikey", "token", "result", "errorCode"),
+            failedJson.keySet(),
+        )
+        assertEquals("failed", failedJson["result"].asString)
+        assertEquals(
+            "STORE_TEMPORARILY_UNAVAILABLE",
+            failedJson["errorCode"].asString,
+        )
+        assertEquals(StorePurchaseStatus.CONSUME_REQUIRED, consumeFailed.payload.state?.status)
+        assertEquals(4L, consumeFailed.payload.state?.retryAfter)
+    }
+
+    @Test
+    fun storeApi_preservesBackendErrorsWithoutInventingSuccessState() = runBlocking {
+        server.enqueue(
+            MockResponse().setResponseCode(422).setBody(
+                """
+                {
+                  "status": false,
+                  "errorCode": "APP_MISMATCH",
+                  "message": "The purchase belongs to another app.",
+                  "requestId": "store-error-request",
+                  "data": []
+                }
+                """.trimIndent(),
+            ),
+        )
+        server.enqueue(
+            MockResponse().setResponseCode(200).setBody(
+                """
+                {
+                  "status": false,
+                  "errorCode": "INVALID_PURCHASE",
+                  "message": "Rejected",
+                  "data": null
+                }
+                """.trimIndent(),
+            ),
+        )
+
+        val httpError = service.submitStorePurchase(
+            fullStorePurchaseRequest(),
+        ) as StoreServiceResult.Response
+        server.takeRequest()
+        val envelopeError = service.getStoreVerificationStatus(
+            StoreVerificationStatusApiRequest(
+                apiKey = "key",
+                token = "customer",
+                verificationRequestId = 44,
+            ),
+        ) as StoreServiceResult.Response
+
+        assertEquals(422, httpError.statusCode)
+        assertFalse(httpError.payload.status ?: true)
+        assertNull(httpError.payload.state)
+        assertEquals("APP_MISMATCH", httpError.payload.errorCode)
+        assertEquals("store-error-request", httpError.requestId)
+        assertEquals(200, envelopeError.statusCode)
+        assertFalse(envelopeError.payload.status ?: true)
+        assertNull(envelopeError.payload.state)
+        assertEquals("INVALID_PURCHASE", envelopeError.payload.errorCode)
+    }
+
+    private fun fullStorePurchaseRequest(): StorePurchaseApiRequest =
+        StorePurchaseApiRequest(
+            apiKey = "mobile-api-key",
+            token = "customer-token",
+            appIdentifier = "com.example.host",
+            productIdentifier = "premium-monthly",
+            offeringIdentifier = "main",
+            country = "IR",
+            appVersion = "3.4.6",
+            forceVersion = 9,
+            operation = StorePurchaseOperation.PURCHASE,
+            purchase = StorePurchaseEvidence(
+                token = "store-token-secret",
+                purchaseTime = 1_725_000_000_000L,
+                orderId = "order-secret",
+                packageName = "com.example.host",
+                developerPayload = "payload-secret",
+                originalJson = "raw-json-secret",
+                signature = "signature-secret",
+            ),
+        )
 
     @Test
     fun validateDiscountCode_usesBackendContractAndRetainsTypedData() = runBlocking {

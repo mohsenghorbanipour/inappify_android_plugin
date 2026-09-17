@@ -233,8 +233,12 @@ public interface InappifyClient : AutoCloseable {
         )
 
     /**
-     * Purchases one product through the marketplace selected by
-     * [InappifyPurchaseRequest.market] for this call.
+     * Purchases one product through the configured app route.
+     *
+     * The default client preserves [InappifyPurchaseRequest.market] for V1
+     * requests without a product type. Explicitly typed V2 requests use the
+     * server route, falling back to the request market when it is absent.
+     * The opt-in Go client always uses its bound server route.
      *
      * This overload supports direct, lost-purchase, and trial flows which do
      * not need marketplace UI. A non-trial Bazaar request fails with
@@ -246,8 +250,12 @@ public interface InappifyClient : AutoCloseable {
     ): InappifyResult<InappifyPurchase>
 
     /**
-     * Purchases one product through the marketplace selected by
-     * [InappifyPurchaseRequest.market] for this call.
+     * Purchases one product through the configured app route.
+     *
+     * The default client preserves [InappifyPurchaseRequest.market] for V1
+     * requests without a product type. Explicitly typed V2 requests use the
+     * server route, falling back to the request market when it is absent.
+     * The opt-in Go client always uses its bound server route.
      *
      * [activity] must be the current foreground activity and must implement
      * AndroidX `ActivityResultRegistryOwner` and `LifecycleOwner`. It is used

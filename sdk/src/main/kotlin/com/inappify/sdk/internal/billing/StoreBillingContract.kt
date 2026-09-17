@@ -25,14 +25,50 @@ internal interface StoreBillingAdapter : AutoCloseable {
     /** Returns validated purchases currently owned by the customer for [productType]. */
     suspend fun queryPurchases(productType: StoreProductType): StorePurchaseQueryResult
 
+    /**
+     * Consumes one validated in-app purchase in the selected marketplace.
+     *
+     * The default keeps existing test and third-party internal adapters source-compatible while
+     * making unsupported consumption an explicit permanent result. Implementations must never
+     * include the purchase token or receipt data in errors or diagnostics.
+     */
+    suspend fun consume(purchase: StorePurchase): StoreConsumeResult =
+        StoreConsumeResult.PermanentFailure(
+            StoreBillingError(
+                code = StoreBillingErrorCode.UNSUPPORTED_MARKET,
+                message = "Purchase consumption is not supported by this billing adapter.",
+            ),
+        )
+
     /** Releases active billing resources. This operation is idempotent. */
     override fun close()
+}
+
+/**
+ * Optional capability for V2 reconciliation that validates owned receipts independently.
+ * Keeping this separate avoids adding another query method to [StoreBillingAdapter].
+ */
+internal interface PartialStorePurchaseQueryAdapter {
+
+    /** Returns valid receipts and counts receipts rejected during local validation. */
+    suspend fun queryPurchasesPartially(
+        productType: StoreProductType,
+    ): StorePurchaseQueryResult
 }
 
 /** Product categories understood by native billing adapters. */
 internal enum class StoreProductType {
     IN_APP,
     SUBSCRIPTION,
+}
+
+/** Validation policy for an owned-purchase query. */
+internal enum class StorePurchaseQueryMode {
+    /** Preserves the V1 behavior: the first invalid receipt fails the whole query. */
+    STRICT,
+
+    /** Keeps valid receipts and reports invalid receipts independently. */
+    PARTIAL,
 }
 
 /** Store-neutral input for one native purchase attempt. */
@@ -75,15 +111,57 @@ internal sealed interface StoreBillingResult {
 /** Terminal result of querying purchases already owned by the current store account. */
 internal sealed interface StorePurchaseQueryResult {
 
-    /** Locally verified purchase evidence returned by the selected store. */
-    class Success(val purchases: List<StorePurchase>) : StorePurchaseQueryResult {
+    /**
+     * Locally verified evidence plus receipts rejected independently by a partial query.
+     * [invalidPurchaseCount] is always zero for a strict successful query.
+     */
+    class Success @JvmOverloads constructor(
+        val purchases: List<StorePurchase>,
+        val invalidPurchaseCount: Int = 0,
+    ) : StorePurchaseQueryResult {
+        init {
+            require(invalidPurchaseCount >= 0) {
+                "invalidPurchaseCount must not be negative."
+            }
+        }
+
         override fun toString(): String =
-            "StorePurchaseQueryResult.Success(purchaseCount=${purchases.size})"
+            "StorePurchaseQueryResult.Success(" +
+                "purchaseCount=${purchases.size}, " +
+                "invalidPurchaseCount=$invalidPurchaseCount" +
+                ")"
     }
 
     /** A structured failure that does not expose store credentials or purchase evidence. */
     class Failure(val error: StoreBillingError) : StorePurchaseQueryResult {
         override fun toString(): String = "StorePurchaseQueryResult.Failure(error=$error)"
+    }
+}
+
+/** Terminal result of consuming one validated store purchase. */
+internal sealed interface StoreConsumeResult {
+
+    /** The marketplace confirmed that the purchase was consumed. */
+    data object Success : StoreConsumeResult {
+        override fun toString(): String = "StoreConsumeResult.Success"
+    }
+
+    /** A transient failure for which the exact same purchase may be retried safely. */
+    class RetryableFailure(val error: StoreBillingError) : StoreConsumeResult {
+        init {
+            require(error.isRetryable) { "A retryable consume failure requires retryable error metadata." }
+        }
+
+        override fun toString(): String = "StoreConsumeResult.RetryableFailure(error=$error)"
+    }
+
+    /** A permanent failure which requires configuration or purchase-data correction. */
+    class PermanentFailure(val error: StoreBillingError) : StoreConsumeResult {
+        init {
+            require(!error.isRetryable) { "A permanent consume failure cannot be retryable." }
+        }
+
+        override fun toString(): String = "StoreConsumeResult.PermanentFailure(error=$error)"
     }
 }
 
@@ -126,6 +204,7 @@ internal enum class StoreBillingErrorCode {
     PURCHASE_FLOW_FAILED,
     PURCHASE_FAILED,
     PURCHASE_QUERY_FAILED,
+    CONSUME_FAILED,
     INVALID_PURCHASE_STATE,
     INVALID_PURCHASE_DATA,
     PRODUCT_MISMATCH,
