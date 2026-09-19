@@ -105,6 +105,13 @@ internal class EncryptedSessionStateStore private constructor(
     override suspend fun save(session: PersistedSession): Boolean =
         saveWithDiagnostics(session) is SessionSaveResult.Success
 
+    override suspend fun loadForCacheRestore(): PersistedSession? = withStorageLock {
+        // AtomicFile recovery is allowed, but offline bootstrap must not migrate,
+        // delete, or rewrite credentials and must never touch purchase recovery.
+        if (!sessionFile.promoteInterruptedFirstWrite()) return@withStorageLock null
+        if (sessionFile.hasRecoverableData()) readSession() else null
+    }
+
     override suspend fun saveWithDiagnostics(
         session: PersistedSession,
     ): SessionSaveResult = try {
@@ -588,6 +595,7 @@ internal class EncryptedSessionStateStore private constructor(
                 session.cacheContextFingerprint,
             )
             addNullableString("purchaseRecoveryId", session.purchaseRecoveryId)
+            addProperty("cacheRestoreBlocked", session.cacheRestoreBlocked)
             addNullableString("customerInfoJson", session.customerInfoJson)
             addNullableString("offeringsJson", session.offeringsJson)
             addNullableString(
@@ -615,6 +623,7 @@ internal class EncryptedSessionStateStore private constructor(
             customerInfoJson = json.stringValue("customerInfoJson"),
             offeringsJson = json.stringValue("offeringsJson"),
             customerInfoUpdatedAt = json.stringValue("customerInfoUpdatedAt"),
+            cacheRestoreBlocked = json.readCacheRestoreBlocked(),
         )
     }
 

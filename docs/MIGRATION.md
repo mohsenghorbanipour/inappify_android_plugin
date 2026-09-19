@@ -1,7 +1,17 @@
 # Upgrading from library V1 to V2
 
 This guide separates a **library upgrade** from a **Go protocol migration**.
-Do not replace the factory merely because the dependency version is 2.0.0.
+Do not replace the factory merely because the dependency version is 2.x.
+
+## Opt-in offline startup in 2.1.0
+
+Existing `configure` and resource method behavior is unchanged. Applications
+that need immediate cached display can call the additive
+`restoreCachedSession(options)` extension before starting their normal
+Configure/refresh in the background. A cache miss is not a configured session.
+See [the offline cache guide](OFFLINE_CACHE.md) for identity checks, logout
+barriers, targeting invalidation and stale-entitlement limits. No switch to Go,
+new API key, data reset, or purchase-journal migration is required.
 
 ## 1. Keep the existing V1 integration
 

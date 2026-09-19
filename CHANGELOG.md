@@ -3,6 +3,35 @@
 Library versions are independent of the V1, Laravel Store V2 and Go V2 HTTP
 protocols. See the [upgrade guide](docs/MIGRATION.md) before changing factories.
 
+## [2.1.0] - 2026-09-19
+
+### Added
+
+- Opt-in `InappifyClient.restoreCachedSession(options)` extension for local-only
+  legacy session bootstrap. Valid matching CustomerInfo and configuration-bound
+  Offerings are published through the existing snapshot/events before the host
+  starts a background Configure. See [offline integration](docs/OFFLINE_CACHE.md).
+- Strict offline cache acceptance: API-key and exact customer binding,
+  anonymous-only implicit identity, bounded JSON, duplicate-key rejection and
+  calendar/time validation. Invalid catalogs do not hide valid CustomerInfo.
+- Durable rejection markers for known authentication failures after opting into
+  restored state, including after a successful background refresh. Recovery
+  credentials and pending purchase journals remain intact.
+
+### Compatibility and safety
+
+- Existing Configure network behavior, getter defaults, factories, V1 storage
+  migration and public interface methods are unchanged. No automatic Go switch.
+- Restoration performs no HTTP, billing, delivery, consume or attribute writes;
+  it does not import unbound old Flutter preferences. Hosts retain responsibility
+  for pending logout, account-generation guards and local entitlement expiration.
+- Transient refresh failures retain valid restored state. A successful local
+  cache load is not evidence of current server authorization or payment success.
+- Added 30 cache regressions, an API compatibility test and two compile-verified
+  instrumentation cases. All 419 JVM tests pass; matching release artifacts have
+  no removed/changed checked V1/V2 public JVM descriptors. Device upgrade and
+  live store acceptance remain separate checks.
+
 ## [2.0.0] - 2026-09-17
 
 ### Added

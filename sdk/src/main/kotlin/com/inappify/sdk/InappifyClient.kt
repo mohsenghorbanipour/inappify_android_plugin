@@ -22,7 +22,7 @@ public interface InappifyClient : AutoCloseable {
          * Creates an independent client backed by the production Inappify
          * service and application-private session storage.
          *
-         * No network request is made until [configure] is called.
+         * This factory makes no network request.
          * Applications should create one client in their application or
          * dependency-injection scope, retain it for that scope's lifetime, and
          * call [close] when the owner is permanently released.

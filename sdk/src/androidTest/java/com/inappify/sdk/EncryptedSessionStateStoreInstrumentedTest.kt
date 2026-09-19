@@ -13,6 +13,7 @@ import com.inappify.sdk.internal.storage.PersistedSession
 import com.inappify.sdk.internal.storage.RejectedStoreEvidenceTombstone
 import com.inappify.sdk.internal.storage.SessionSaveResult
 import com.inappify.sdk.internal.storage.SessionStorageStage
+import com.inappify.sdk.internal.storage.blockCacheRestore
 import java.io.File
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
@@ -89,6 +90,29 @@ class EncryptedSessionStateStoreInstrumentedTest {
                 session.purchaseRecoveryId!!.encodeToByteArray(),
             ),
         )
+    }
+
+    @Test
+    fun offlineRejectionMarkerSurvivesEncryptedStoreRecreation() = runBlocking {
+        val original = persistedSession()
+        assertTrue(store.save(original.blockCacheRestore()))
+        val recreated = EncryptedSessionStateStore.create(context)
+        val restored = recreated.loadForCacheRestore()
+        assertTrue(restored?.cacheRestoreBlocked == true)
+        assertEquals(original.token, restored?.token)
+        assertEquals(original.appUserIdentifier, restored?.appUserIdentifier)
+        assertEquals(original.purchaseRecoveryId, restored?.purchaseRecoveryId)
+        assertTrue(recreated.save(original))
+        assertFalse(recreated.loadForCacheRestore()!!.cacheRestoreBlocked)
+    }
+
+    @Test
+    fun offlineReadDoesNotMigrateLegacyCredentialsOrCleanPreferences() = runBlocking {
+        assertTrue(legacyPreferences().edit().putString("flutter.token", "legacy-offline-token")
+            .putString("flutter.appUserIdentifier", "legacy-offline-customer").commit())
+        assertNull(store.loadForCacheRestore())
+        assertEquals("legacy-offline-token", legacyPreferences().getString("flutter.token", null))
+        assertFalse(migrationMarker().exists())
     }
 
     @Test

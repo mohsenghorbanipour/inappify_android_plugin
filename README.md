@@ -7,7 +7,11 @@
 Native Android SDK for Inappify purchases, customer information, offerings,
 entitlements, discount codes, and customer attributes.
 
-Version 2.0.0 preserves the original client API and adds explicit store product
+Version 2.1.0 adds opt-in, identity-bound offline session restoration while
+preserving the original network-first Configure API. See
+[offline startup](docs/OFFLINE_CACHE.md) for local display followed by background refresh.
+
+Version 2 preserves the original client API and adds explicit store product
 types, durable verification/recovery, consumable fulfillment, and an opt-in Go
 client. Start with the [V1 upgrade checklist](docs/MIGRATION.md) before changing
 an existing integration.
@@ -89,7 +93,7 @@ Add the versioned library module:
 dependencies {
     implementation(
         "com.github.mohsenghorbanipour:" +
-            "inappify_android_plugin:v2.0.0",
+            "inappify_android_plugin:v2.1.0",
     )
 }
 ```

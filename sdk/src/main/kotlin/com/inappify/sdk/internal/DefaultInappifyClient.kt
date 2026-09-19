@@ -5,6 +5,7 @@ import android.content.Context
 import com.google.gson.Gson
 import com.google.gson.JsonObject
 import com.inappify.sdk.BuildConfig
+import com.inappify.sdk.CachedSessionCapableClient
 import com.inappify.sdk.ConsumableFulfillmentCapableClient
 import com.inappify.sdk.InappifyAttribute
 import com.inappify.sdk.InappifyAttributesRequest
@@ -105,6 +106,9 @@ import com.inappify.sdk.internal.storage.SessionSaveResult
 import com.inappify.sdk.internal.storage.SessionStateStore
 import com.inappify.sdk.internal.storage.SessionStorageFailure
 import com.inappify.sdk.internal.storage.SessionStorageStage
+import com.inappify.sdk.internal.storage.isValidCachedJson
+import com.inappify.sdk.internal.storage.isValidCachedExpiration
+import com.inappify.sdk.internal.storage.blockCacheRestore
 import java.math.BigDecimal
 import java.security.MessageDigest
 import java.util.LinkedHashMap
@@ -157,6 +161,7 @@ internal class DefaultInappifyClient(
         },
     private val legacyPurchaseRouting: Boolean = true,
 ) : InappifyClient,
+    CachedSessionCapableClient,
     StoreV2CapableClient,
     ConsumableFulfillmentCapableClient,
     HttpDiagnosticsCapableClient {
@@ -179,6 +184,9 @@ internal class DefaultInappifyClient(
         InternalSessionState.initial(sdkVersion),
     )
     private val gson = Gson()
+    // Protected by operationMutex. Never retain raw credentials in rejection metadata.
+    private val rejectedCachedSessions = HashSet<String>()
+    private var offlineRestoredSession: String? = null
     private val storeV2Coordinator = StoreV2Coordinator(
         service = service,
         stateStore = sessionStore,
@@ -260,6 +268,149 @@ internal class DefaultInappifyClient(
                 operationGeneration = generation.get(),
                 invokeHandler = true,
             ).toPublicResult()
+        }
+    }
+
+    override suspend fun restoreCachedSessionInternal(
+        options: InappifyOptions,
+    ): InappifyResult<Boolean> = withContext(Dispatchers.IO) {
+        operationMutex.withLock {
+            ensureOpen()
+            val operationGeneration = generation.get()
+            val metadata = try {
+                metadataProvider.get()
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (_: Exception) {
+                return@withLock cachedSessionFailure(
+                    InappifyErrorCode.INVALID_CONFIGURATION,
+                    "Host application metadata is unavailable.",
+                )
+            }
+            val normalized = normalize(options, metadata)
+                ?: return@withLock cachedSessionFailure(
+                    InappifyErrorCode.INVALID_CONFIGURATION,
+                    "A non-empty API key and valid marketplace configuration are required.",
+                )
+            val expectedIdentifier = options.appUserIdentifier.normalized()
+            if (options.appUserIdentifier != null &&
+                (expectedIdentifier == null || options.appUserIdentifier != expectedIdentifier)
+            ) {
+                return@withLock cachedSessionFailure(
+                    InappifyErrorCode.INVALID_CONFIGURATION,
+                    "An explicit cached customer identifier must be non-empty and unmodified.",
+                )
+            }
+            val current = state.get()
+            // Never replace a configured account with an older account left on disk.
+            val cached = if (current.isConfigured) {
+                current.toPersistedSession()
+            } else {
+                try {
+                    sessionStore.loadForCacheRestore()
+                } catch (cancellation: CancellationException) {
+                    throw cancellation
+                } catch (_: Exception) {
+                    return@withLock cachedSessionFailure(
+                        InappifyErrorCode.STORE_UNAVAILABLE,
+                        "The encrypted session cache could not be read.",
+                    )
+                }
+            }
+            fun miss(): InappifyResult<Boolean> = InappifyResult.Success(false, snapshot)
+            if (cached == null || cached.cacheRestoreBlocked ||
+                cached.apiKeyFingerprint != normalized.apiKeyFingerprint ||
+                cached.token.isNullOrBlank() || cached.appId == null || cached.appId <= 0 ||
+                (cached.forceVersion != null && cached.forceVersion < 1)
+            ) return@withLock miss()
+            val identifier = cached.appUserIdentifier.normalized()
+                ?: return@withLock miss()
+            if (identifier != cached.appUserIdentifier ||
+                (expectedIdentifier != null && identifier != expectedIdentifier) ||
+                (expectedIdentifier == null && !identifier.isAnonymousIdentity()) ||
+                cached.offlineSessionFingerprint() in rejectedCachedSessions
+            ) return@withLock miss()
+            val customerRaw = cached.customerInfoJson ?: return@withLock miss()
+            if (!isValidCachedJson(customerRaw)) return@withLock miss()
+            val customer = parseCustomerInfo(customerRaw) ?: return@withLock miss()
+            if (customer.originalAppUserId != identifier ||
+                !isValidCachedExpiration(customer.latestExpirationDate) ||
+                customer.entitlements.orEmpty().any { !isValidCachedExpiration(it.expirationDate) }
+            ) return@withLock miss()
+            var restored = cached.toConfiguredState(
+                normalized, metadata, recoverMissingPurchaseBinding = false, validateCachedDocuments = true,
+            )
+            // An unrelated corrupt offering must not prevent valid customer cache from loading.
+            if (restored.offeringsJson?.let(::isValidCachedJson) == false ||
+                (restored.offerings?.forceVersion != null &&
+                    restored.offerings?.forceVersion != restored.forceVersion)
+            ) {
+                restored = restored.copy(offerings = null, offeringsJson = null)
+            }
+            currentCoroutineContext().ensureActive()
+            val transition = synchronized(lifecycleLock) {
+                if (closed.get() || generation.get() != operationGeneration) null else {
+                    val previous = state.get()
+                    val next = restored.copy(revision = previous.revision + 1)
+                    state.set(next)
+                    offlineRestoredSession = cached.offlineSessionFingerprint()
+                    previous to next
+                }
+            } ?: return@withLock cachedSessionFailure(
+                InappifyErrorCode.REQUEST_CANCELLED,
+                "The SDK operation was cancelled.",
+            )
+            publishEvents(transition.first, transition.second, requestId = null)
+            InappifyResult.Success(true, transition.second.toSnapshot())
+        }
+    }
+
+    private fun PersistedSession.offlineSessionFingerprint(): String =
+        fingerprintComponents(apiKeyFingerprint, token, appUserIdentifier)
+
+    private fun cachedSessionFailure(code: InappifyErrorCode, message: String): InappifyResult<Boolean> =
+        resourceFailure(InappifyError(code, message, details = mapOf("operation" to OPERATION_RESTORE_CACHE)))
+
+    /** Only the opt-in offline path adds durable cache rejection to legacy auth behavior. */
+    private suspend fun invalidateRestoredSession(
+        rejectedState: InternalSessionState,
+        error: InappifyError,
+        operationGeneration: Long,
+    ): InappifyError {
+        if (!error.code.requiresNewSession()) return error
+        val persisted = rejectedState.toPersistedSession()
+        val fingerprint = persisted.offlineSessionFingerprint()
+        if (offlineRestoredSession != fingerprint) return error
+        rejectedCachedSessions.add(fingerprint)
+        val transition = synchronized(lifecycleLock) {
+            if (closed.get() || generation.get() != operationGeneration) null else {
+                val previous = state.get()
+                val next = InternalSessionState.initial(previous.sdkVersion)
+                    .copy(revision = previous.revision + 1)
+                state.set(next)
+                previous to next
+            }
+        } ?: return error
+        publishEvents(transition.first, transition.second, requestId = null)
+        val saved = withContext(NonCancellable) {
+            try {
+                sessionStore.saveWithDiagnostics(persisted.blockCacheRestore())
+            } catch (_: Exception) {
+                SessionSaveResult.Failure(SessionStorageFailure(SessionStorageStage.UNKNOWN))
+            }
+        }
+        val details = error.details + mapOf(
+            "cacheInvalidated" to true,
+            "cacheRestoreBlockPersisted" to (saved is SessionSaveResult.Success),
+        )
+        return if (saved is SessionSaveResult.Success) {
+            InappifyError(error.code, error.message, error.isRetryable, details)
+        } else {
+            InappifyError(
+                InappifyErrorCode.STORE_UNAVAILABLE,
+                "The rejected session cache could not be blocked securely.",
+                details = details + (saved as SessionSaveResult.Failure).diagnostic.toSafeDetails(),
+            )
         }
     }
 
@@ -349,6 +500,12 @@ internal class DefaultInappifyClient(
                     is Evaluation.Failure -> {
                         if (!refreshed.error.code.requiresNewSession()) {
                             return@lifecycle failure(refreshed.error)
+                        }
+                        val rejected = invalidateRestoredSession(
+                            reusable, refreshed.error, operationGeneration,
+                        )
+                        if (rejected.details["cacheRestoreBlockPersisted"] == false) {
+                            return@lifecycle failure(rejected)
                         }
                     }
                 }
@@ -4053,6 +4210,10 @@ internal class DefaultInappifyClient(
             )
         ) {
             is Evaluation.Failure -> {
+                val rejected = invalidateRestoredSession(current, evaluation.error, operationGeneration)
+                if (rejected.details["cacheInvalidated"] == true) {
+                    return@withLock resourceFailure(rejected)
+                }
                 val receivedForceVersion = result.successfulHttpForceVersion()
                 markResourceFailure(
                     operationGeneration = operationGeneration,
@@ -4156,6 +4317,10 @@ internal class DefaultInappifyClient(
             )
         ) {
             is Evaluation.Failure -> {
+                val rejected = invalidateRestoredSession(current, evaluation.error, operationGeneration)
+                if (rejected.details["cacheInvalidated"] == true) {
+                    return@withLock resourceFailure(rejected)
+                }
                 markResourceFailure(
                     operationGeneration = operationGeneration,
                     customerInfo = false,
@@ -4527,6 +4692,8 @@ internal class DefaultInappifyClient(
     private fun PersistedSession.toConfiguredState(
         options: NormalizedOptions,
         metadata: AppMetadata,
+        recoverMissingPurchaseBinding: Boolean = true,
+        validateCachedDocuments: Boolean = false,
     ): InternalSessionState {
         val restoredCustomer = customerInfoJson
             ?.let(::parseCustomerInfo)
@@ -4536,7 +4703,7 @@ internal class DefaultInappifyClient(
         val cacheContextMatches = cacheContextFingerprint != null &&
             cacheContextFingerprint == options.cacheContextFingerprint
         val restoredOfferings = if (cacheContextMatches) {
-            offeringsJson?.let(::parseOfferings)
+            offeringsJson?.takeIf { !validateCachedDocuments || isValidCachedJson(it) }?.let(::parseOfferings)
         } else {
             null
         }
@@ -4573,7 +4740,7 @@ internal class DefaultInappifyClient(
                 customerInfoUpdatedAt
             },
             purchaseRecoveryId = purchaseRecoveryId?.safePurchaseAttemptId()
-                ?: newPurchaseRecoveryId(),
+                ?: if (recoverMissingPurchaseBinding) newPurchaseRecoveryId() else null,
             customerInfo = restoredCustomer,
             offerings = restoredOfferings,
         )
@@ -5117,6 +5284,14 @@ internal class DefaultInappifyClient(
                 ),
             )
         }
+        if (operation in setOf(OPERATION_CONFIGURE, OPERATION_LOGIN, OPERATION_LOGOUT)) {
+            // A committed online lifecycle response re-establishes authority for this token.
+            val fingerprint = authoritativeState.toPersistedSession().offlineSessionFingerprint()
+            rejectedCachedSessions.remove(fingerprint)
+            // Keep the opt-in protection across successful refresh and account/token rotation.
+            // Clients that never restored offline retain their original V1 auth semantics.
+            if (offlineRestoredSession != null) offlineRestoredSession = fingerprint
+        }
         return success(authoritativeState)
     }
 
@@ -5570,6 +5745,7 @@ internal class DefaultInappifyClient(
         private const val STORE_QUERY_TIMEOUT_MILLIS = 30 * 1000L
         private const val STORE_PURCHASE_TIMEOUT_MILLIS = 10 * 60 * 1000L
         private const val OPERATION_CONFIGURE = "configure"
+        private const val OPERATION_RESTORE_CACHE = "restoreCachedSession"
         private const val OPERATION_LOGIN = "login"
         private const val OPERATION_LOGOUT = "logout"
         private const val OPERATION_GET_CUSTOMER_INFO = "getCustomerInfo"

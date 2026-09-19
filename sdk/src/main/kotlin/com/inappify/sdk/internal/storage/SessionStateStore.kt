@@ -13,6 +13,7 @@ internal class PersistedSession(
     internal val cacheContextFingerprint: String? = null,
     internal val purchaseRecoveryId: String? = null,
     internal val storePlatform: String? = null,
+    internal val cacheRestoreBlocked: Boolean = false,
 ) {
     override fun toString(): String =
         "PersistedSession(" +
@@ -25,14 +26,35 @@ internal class PersistedSession(
             "cacheContextFingerprint=${cacheContextFingerprint.redacted()}, " +
             "purchaseRecoveryId=${purchaseRecoveryId.redacted()}, " +
             "storePlatform=$storePlatform, " +
+            "cacheRestoreBlocked=$cacheRestoreBlocked, " +
             "customerInfoJson=${customerInfoJson.redacted()}, " +
             "offeringsJson=${offeringsJson.redacted()}, " +
             "customerInfoUpdatedAt=$customerInfoUpdatedAt" +
             ")"
 }
 
+/** Retains the credential and recovery binding while disabling only offline adoption. */
+internal fun PersistedSession.blockCacheRestore(): PersistedSession = PersistedSession(
+    token = token,
+    appUserIdentifier = appUserIdentifier,
+    forceVersion = forceVersion,
+    appId = appId,
+    storeInfo = storeInfo,
+    apiKeyFingerprint = apiKeyFingerprint,
+    customerInfoJson = customerInfoJson,
+    offeringsJson = offeringsJson,
+    customerInfoUpdatedAt = customerInfoUpdatedAt,
+    cacheContextFingerprint = cacheContextFingerprint,
+    purchaseRecoveryId = purchaseRecoveryId,
+    storePlatform = storePlatform,
+    cacheRestoreBlocked = true,
+)
+
 internal interface SessionStateStore {
     suspend fun load(): PersistedSession?
+
+    /** Reads only established session storage; production does not migrate legacy credentials. */
+    suspend fun loadForCacheRestore(): PersistedSession? = load()
 
     suspend fun save(session: PersistedSession): Boolean
 

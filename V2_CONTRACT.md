@@ -4,7 +4,7 @@ This is a code-derived implementation/acceptance checklist, not a claim that
 every device or backend integration has passed. The original design input was
 the September 2026 Go SDK V2 contract, version 1.1.
 
-Library 2.0.0 contains two different V2 protocols: Laravel Store V2 payments and
+Library 2.x contains two different V2 protocols: Laravel Store V2 payments and
 opt-in Go V2 customer/session APIs. `InappifyClient.create(context)` remains the
 V1-compatible factory. See the [migration guide](docs/MIGRATION.md).
 
@@ -13,6 +13,7 @@ V1-compatible factory. See the [migration guide](docs/MIGRATION.md).
 | Area | Implemented behavior |
 | --- | --- |
 | V1 upgrade | Retained API entry points and storage; cached Bazaar identity/recovery binding preserved; untyped request market selection retained. |
+| 2.1 offline bootstrap | Additive cache-only restoration of a matching encrypted legacy session, existing snapshot/events, host-owned background refresh and identity/logout barriers; durable known-auth rejection for opted-in sessions. |
 | Store payments | Direct Android and Bazaar; explicit types, verification checkpoints, polling and recovery. Unsupported stores fail explicitly. |
 | Consumables | Host-owned idempotent inventory transaction; acknowledgement only after durable delivery, then Bazaar consume/report. |
 | Go trust | Pinned Ed25519, audience/version/scope/subject/time checks. Official factory discovers scope only from a verified response; explicit configuration can constrain it beforehand. |
@@ -42,6 +43,29 @@ The publisher must review the bundled official signing pin and its rotation
 plan. Runtime key discovery cannot establish trust in unrelated key material.
 
 ## Local evidence
+
+### 2.1.0 — September 19, 2026
+
+All **419 SDK JVM tests in 23 suites** passed with zero failures, errors or skips.
+The SDK-only release lint, release AAR/sources, Maven-local publication and
+instrumentation compilation also passed. The local offline lint report contains
+zero issues; this does not establish that every dependency is the newest version.
+Two additional encrypted-cache instrumentation cases were compiled, not executed.
+
+A classfile comparison of matching published release artifacts checked **475
+public/protected JVM members across 50 V1 classes** and **679 members across 84
+V2 classes**, with no removed descriptors, changed static/visibility contracts,
+new final restrictions or removed original supertypes. This is bounded binary
+surface evidence, not full Kotlin metadata or behavioral certification. Existing
+API tests and legacy behavior regressions passed separately in the JVM suite.
+
+The new cache tests cover no-network restoration, exact key/customer matching,
+malformed and oversized data, expiry syntax, catalog targeting, no legacy
+preference import, auth rejection across restart, storage failure and lifecycle
+cancellation. See [offline integration and limits](docs/OFFLINE_CACHE.md).
+No real-device installation, payment or upgrade was performed for this release.
+
+### Previous 2.0.0 evidence
 
 On September 17, a fresh copy containing only public candidate sources (no
 integration app or local configuration) passed all **388 SDK tests in 22 suites**,
