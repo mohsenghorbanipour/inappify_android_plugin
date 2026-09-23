@@ -40,6 +40,28 @@ class HttpDiagnosticsTest {
     }
 
     @Test
+    fun `login attempt secret is redacted from diagnostics`() = runBlocking {
+        val server = MockWebServer()
+        server.start()
+        val transport = OkHttpTransport.create(server.url("/app/v2/"), OkHttpClient())
+        val trace = AtomicReference<InappifyHttpTrace>()
+        val delivered = CountDownLatch(1)
+        transport.addHttpTraceListener { trace.set(it); delivered.countDown() }
+        try {
+            val attempt = "login-attempt-opaque-secret-1234567890"
+            server.enqueue(MockResponse().setResponseCode(503)
+                .setBody("""{"status":false,"message":"$attempt"}"""))
+            transport.execute(HttpRequest("logout", "{}",
+                headers = mapOf("X-Inappify-Login-Attempt" to attempt,
+                    "X-Inappify-Logout-Attempt" to attempt)))
+            assertTrue(delivered.await(2, TimeUnit.SECONDS))
+            assertEquals("<redacted>", trace.get().requestHeaders["X-Inappify-Login-Attempt"])
+            assertEquals("<redacted>", trace.get().requestHeaders["X-Inappify-Logout-Attempt"])
+            assertFalse(trace.get().responseBody!!.contains(attempt))
+        } finally { transport.close(); server.shutdown() }
+    }
+
+    @Test
     fun `transport emits one useful exchange with credentials redacted`() = runBlocking {
         val server = MockWebServer()
         server.start()

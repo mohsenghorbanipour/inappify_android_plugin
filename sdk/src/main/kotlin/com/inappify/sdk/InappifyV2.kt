@@ -10,14 +10,16 @@ import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 
 /** Explicit, fail-closed opt-in to the Go v2 service. V1 creation is unchanged. */
-public class InappifyV2Configuration public constructor(
-    public val apiBaseUrl: String = DEFAULT_API_BASE_URL,
+public class InappifyV2Configuration @JvmOverloads public constructor(
+    public val sdkApiBaseUrl: String = DEFAULT_SDK_API_BASE_URL,
     public val issuer: String,
     public val appId: Long,
     public val projectId: Long,
     pinnedSigningKeys: Map<String, String>,
     paymentHosts: Set<String>,
     assetHosts: Set<String> = emptySet(),
+    public val commerceApiBaseUrl: String = if (sdkApiBaseUrl == DEFAULT_SDK_API_BASE_URL)
+        DEFAULT_COMMERCE_API_BASE_URL else sdkApiBaseUrl,
 ) {
     /** kid to unpadded base64url encoded, raw 32-byte Ed25519 public key. */
     public val pinnedSigningKeys: Map<String, String> =
@@ -25,10 +27,15 @@ public class InappifyV2Configuration public constructor(
     public val paymentHosts: Set<String> = Collections.unmodifiableSet(LinkedHashSet(paymentHosts))
     public val assetHosts: Set<String> = Collections.unmodifiableSet(LinkedHashSet(assetHosts))
     init {
-        val url = apiBaseUrl.toHttpUrl()
-        require(url.isHttps && url.username.isEmpty() && url.password.isEmpty() &&
-            url.query == null && url.fragment == null && url.encodedPath == "/app/v2/") {
-            "Go base URL must be an HTTPS origin followed by /app/v2/."
+        val sdkUrl = sdkApiBaseUrl.toHttpUrl()
+        require(sdkUrl.isHttps && sdkUrl.username.isEmpty() && sdkUrl.password.isEmpty() &&
+            sdkUrl.query == null && sdkUrl.fragment == null && sdkUrl.encodedPath == "/app/v2/") {
+            "SDK API base URL must be an HTTPS origin followed by /app/v2/."
+        }
+        val commerceUrl = commerceApiBaseUrl.toHttpUrl()
+        require(commerceUrl.isHttps && commerceUrl.username.isEmpty() && commerceUrl.password.isEmpty() &&
+            commerceUrl.query == null && commerceUrl.fragment == null && commerceUrl.encodedPath == "/app/v2/") {
+            "Commerce API base URL must be an HTTPS origin followed by /app/v2/."
         }
         require(issuer.isNotBlank() && appId > 0 && projectId > 0)
         require(pinnedSigningKeys.isNotEmpty() && pinnedSigningKeys.keys.all { it.isNotBlank() })
@@ -40,7 +47,8 @@ public class InappifyV2Configuration public constructor(
 
     public companion object {
         /** Official /app service root plus the Go v2 route prefix; V1 routing is independent. */
-        public const val DEFAULT_API_BASE_URL: String = "https://service.inappify.com/app/v2/"
+        public const val DEFAULT_SDK_API_BASE_URL: String = "https://service.inappify.com/app/v2/"
+        public const val DEFAULT_COMMERCE_API_BASE_URL: String = "https://api.inappify.com/app/v2/"
     }
 }
 
@@ -60,9 +68,9 @@ public interface InappifyV2Client : InappifyClient {
     /** Stops v2 network use without discarding verified cache; host owns rollout flags. */
     public fun setNetworkEnabled(enabled: Boolean)
     /**
-     * Retains an already configured legacy purchase client until the official credential bridge
-     * is available. The client must have the same app and customer, and remain owned by the host.
-     * Rebind after login/logout; this method never obtains or exchanges a token.
+     * Temporary compatibility for legacy Direct consumable reconciliation. V2 Direct checkout
+     * and Bazaar billing use the Go session bearer against Laravel V2 without this companion.
+     * The client must have the same app and customer; rebind after login/logout.
      */
     public suspend fun bindLegacyPurchaseClient(client: InappifyClient): InappifyResult<Unit>
 

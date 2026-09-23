@@ -31,10 +31,14 @@ trust and credential-bridge requirements below are not V1 drop-in semantics.
 ## Configuration
 
 The official service root is `https://service.inappify.com/app`; Go endpoints use
-its `/v2/` prefix. `InappifyV2Configuration.DEFAULT_API_BASE_URL` therefore defaults
+its `/v2/` prefix. `InappifyV2Configuration.DEFAULT_SDK_API_BASE_URL` therefore defaults
 to `https://service.inappify.com/app/v2/`. V1 remains on `/app/v1/`, and Laravel
 store-v2 routing is unchanged. For the official service, the host supplies only
 its public SDK API key:
+
+The V2 configuration names these endpoints by responsibility: `sdkApiBaseUrl`
+handles identity and SDK resources, while `commerceApiBaseUrl` handles purchases.
+Both may be overridden independently in custom environments.
 
 ```kotlin
 val sdk = InappifyV2Client.create(applicationContext)
@@ -56,7 +60,7 @@ or applications requiring a predeclared issuer/app/project scope:
 val sdk = InappifyV2Client.create(
     applicationContext,
     InappifyV2Configuration(
-        // apiBaseUrl is optional; override only for an explicit HTTPS /app/v2/ test environment.
+        // sdkApiBaseUrl is optional; override only for an explicit HTTPS /app/v2/ test environment.
         issuer = backendConfiguration.issuer,
         appId = backendConfiguration.appId,
         projectId = backendConfiguration.projectId,

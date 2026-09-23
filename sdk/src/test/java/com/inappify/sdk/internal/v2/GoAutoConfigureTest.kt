@@ -15,7 +15,7 @@ class GoAutoConfigureTest {
     private val signing = SigningFixture()
     private val store = MemoryV2Store()
     private val requests = V2Transport()
-    private var environment = GoV2Environment(signing.config.apiBaseUrl, signing.config.pinnedSigningKeys)
+    private var environment = GoV2Environment(signing.config.sdkApiBaseUrl, signing.config.pinnedSigningKeys)
     private val options = InappifyOptions("test-public-key")
     private val metadata = AppMetadataProvider { AppMetadata("com.example.mobile", "2.4.0", 20400) }
 
@@ -277,7 +277,7 @@ class GoAutoConfigureTest {
     @Test fun defaultFactoryIsAdditiveAndProductionTrustIsNotAnAppInput() {
         val env = GoV2Environment.production()
         assertNull(env.expectedScope)
-        assertEquals(InappifyV2Configuration.DEFAULT_API_BASE_URL, env.apiBaseUrl)
+        assertEquals(InappifyV2Configuration.DEFAULT_SDK_API_BASE_URL, env.sdkApiBaseUrl)
         assertEquals(32, base64Url(env.pinnedSigningKeys.values.single()).size)
         assertNotNull(InappifyV2Client::class.java.getDeclaredMethod("create", Context::class.java))
         assertNotNull(InappifyV2Client::class.java.getDeclaredMethod("create", Context::class.java, InappifyV2Configuration::class.java))

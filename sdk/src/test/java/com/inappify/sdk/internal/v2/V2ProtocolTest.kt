@@ -123,7 +123,41 @@ class V2ProtocolTest {
         repeat(50) { assertTrue(validIdentity(anonymousId())) }
         assertTrue(validIdentity(fixture.subject))
         assertTrue(validIdentity("1234567890123456-"))
-        for (value in listOf("short", "1234567890123456", "hello world 123456", "customer/123456789", "a".repeat(101))) assertFalse(value, validIdentity(value))
+        for (value in listOf("0", "1234", "guest", "short", "1234567890123456", "09123456789",
+            "+989123456789", "user@example.com", "hello world 123456",
+            "customer/123456789", "کاربر-۱۲۳")) assertTrue(value, validIdentity(value))
+        for (value in listOf("", "  ", " short", "short ", "bad\nidentity", "\uD800",
+            "\$INAAnonymousID:client-controlled",
+            "a".repeat(101))) assertFalse(value, validIdentity(value))
+        assertTrue(validCountry(" tr "))
+        assertEquals("TR", normalizeCountry(" tr "))
+        assertFalse(validCountry("IRN"))
+    }
+    @Test fun gatewayFailuresAreRetryableWithBoundedBackoff() = runBlocking {
+        for (status in listOf(502, 504)) {
+            val transport = V2Transport().apply { handler = { response(JsonObject(), status) } }
+            val delays = mutableListOf<Long>()
+            val error = assertThrows(V2Failure::class.java) {
+                runBlocking { GoApi(transport, { fixture.now }, { delays += it }).request("offerings", "session") }
+            }
+            assertTrue(error.sdkError.isRetryable)
+            assertEquals(status, error.sdkError.details["httpStatus"])
+            assertEquals(4, transport.requests.size)
+            assertEquals(3, delays.size)
+        }
+    }
+    @Test fun laravelNumericErrorCodeAndFalseStatusArePreserved() = runBlocking {
+        val transport = V2Transport().apply {
+            handler = { response(jsonObject("""{"status":false,"errorCode":107,"message":"private value"}"""), 200) }
+        }
+        val error = assertThrows(V2Failure::class.java) {
+            runBlocking { GoApi(transport, { fixture.now }, {}).request("purchase", "session") }
+        }
+        assertEquals("ERROR_CODE_107", error.sdkError.details["serverCode"])
+        assertEquals(107L, error.sdkError.details["errorCode"])
+        assertFalse(error.sdkError.isRetryable)
+        assertEquals(1, transport.requests.size)
+        assertFalse(error.sdkError.toString().contains("private value"))
     }
     @Test fun unicodeAttributeLimitAndWriteOnlyReservedKeys() {
         assertTrue(validAttribute("campaign", "😀".repeat(500)))

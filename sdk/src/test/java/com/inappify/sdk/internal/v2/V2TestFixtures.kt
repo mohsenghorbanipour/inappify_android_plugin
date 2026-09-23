@@ -29,7 +29,7 @@ internal class SigningFixture {
         return JsonObject().apply {
             addProperty("status", true); addProperty("sessionType", "public"); addProperty("sessionToken", "go-session-token")
             addProperty("sessionExpiresAt", "2026-09-09T00:00:00Z"); addProperty("appUserId", identity)
-            addProperty("appId", 12); addProperty("storePlatform", 2); addProperty("forceVersion", 4)
+            addProperty("appId", 12); addProperty("storePlatform", 2)
             add("customerInfo", info.deepCopy())
             add("verification", JsonObject().apply {
                 addProperty("algorithm", "EdDSA"); addProperty("keyId", header.get("kid").asString)

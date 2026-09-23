@@ -67,7 +67,9 @@ internal class HttpDiagnosticReporter(
             emptySet()
         } else {
             HttpDiagnosticSanitizer.collectSensitiveValues(requestBody) + requestHeaders.entries
-                .filter { it.key.equals("Authorization", true) }
+                .filter { it.key.equals("Authorization", true) ||
+                    it.key.equals("X-Inappify-Login-Attempt", true) ||
+                    it.key.equals("X-Inappify-Logout-Attempt", true) }
                 .flatMap { listOf(it.value, it.value.substringAfter(' ')) }
         }
         val exposedRequestId = if (unsafeRawHttpLogging) {
@@ -85,7 +87,9 @@ internal class HttpDiagnosticReporter(
                 HttpDiagnosticSanitizer.sanitizeEndpoint(url, unresolvedPath)
             },
             requestHeaders = REQUEST_HEADERS + requestHeaders.mapValues { (name, value) ->
-                if (name.equals("Authorization", true)) "<redacted>" else value.safeHeaderValue(requestSecrets)
+                if (name.equals("Authorization", true) || name.equals("X-Inappify-Login-Attempt", true) ||
+                    name.equals("X-Inappify-Logout-Attempt", true))
+                    "<redacted>" else value.safeHeaderValue(requestSecrets)
             },
             requestBody = if (unsafeRawHttpLogging) {
                 requestBody
