@@ -167,17 +167,19 @@ ready. Official setup requires the Go public SDK key, not issuer/app/project
 form inputs. Android metadata and a durable anonymous UUID are SDK-managed;
 scope is accepted only from verified responses.
 
-Go validates custom identifiers (16–100 characters, restricted ASCII syntax,
-not entirely numeric). Use your backend's stable account ID, for example
+Go validates custom identifiers (1–100 Unicode code points, no controls or edge
+whitespace, no reserved anonymous prefix; numeric IDs are accepted). Use your backend's stable account ID, for example
 `account_user_123456`, consistently on all devices. Do not use an email,
 session token, random ID on every login, or silently hash an existing V1 ID
 into a new customer. Legacy invalid identifiers need an explicit migration plan.
 
 Go CustomerInfo is signed, attributes are write-only, fetch policies are
 explicit and logout may remain pending offline. A Go Bearer session is not a
-Laravel purchase token. The purchase companion requires separately configured,
-matching credentials and rebinding after identity changes. The SDK does not
-invent a credential-exchange endpoint.
+Laravel JSON purchase token. Unbound commerce V2 uses the Go Bearer directly;
+an explicit purchase companion retains the legacy route and requires separately
+configured, matching credentials and rebinding after identity changes. Direct
+consumable recovery still requires that companion. The SDK does not invent a
+credential-exchange endpoint or migrate a paid journal to another credential scope.
 
 See [Go integration](../V2_MIGRATION.md) for complete setup and limitations.
 

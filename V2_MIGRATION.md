@@ -1,6 +1,7 @@
 # Opt-in Go SDK v2
 
-This implementation follows `InAppify-SDK-V2.pdf` document 1.1. Go v2 session
+The released baseline follows `InAppify-SDK-V2.pdf` document 1.1; the unreleased
+`fixVersion2` integration adds the commerce/session behavior described below. Go v2 session
 APIs and Laravel store v2 are different protocols. Existing V1 applications
 continue to use `InappifyClient.create(context)` without changes.
 
@@ -26,15 +27,30 @@ continue to use `InappifyClient.create(context)` without changes.
   non-consumables and subscriptions never enter the consumable delivery flow.
 
 Go protocol adoption is a separate, explicit migration: its identity, attribute,
-trust and credential-bridge requirements below are not V1 drop-in semantics.
+trust and commerce requirements below are not V1 drop-in semantics.
 
 ## Configuration
 
 The official service root is `https://service.inappify.com/app`; Go endpoints use
-its `/v2/` prefix. `InappifyV2Configuration.DEFAULT_API_BASE_URL` therefore defaults
+its `/v2/` prefix. `InappifyV2Configuration.DEFAULT_SDK_API_BASE_URL` therefore defaults
 to `https://service.inappify.com/app/v2/`. V1 remains on `/app/v1/`, and Laravel
 store-v2 routing is unchanged. For the official service, the host supplies only
 its public SDK API key:
+
+The V2 configuration names these endpoints by responsibility: `sdkApiBaseUrl`
+handles identity and SDK resources, while `commerceApiBaseUrl` handles purchases.
+Both may be overridden independently in custom environments.
+The original `apiBaseUrl` named constructor argument/getter and
+`DEFAULT_API_BASE_URL` remain supported. To override both endpoints use the
+additive constructor with `sdkApiBaseUrl` and `commerceApiBaseUrl`; both require
+an HTTPS URL ending in `/app/v2/`. Official commerce defaults to
+`https://api.inappify.com/app/v2/`.
+With the original single-endpoint constructor, a custom SDK base is also the
+commerce base; use the additive overload to separate them explicitly.
+Native Go receipt journals bind to the canonical commerce endpoint independently
+of the SDK session-cache fingerprint. Changing the commerce endpoint may retain
+session cache, but cannot replay or confirm old purchases at the new endpoint.
+Keep the original endpoint available to recover its pending purchases.
 
 ```kotlin
 val sdk = InappifyV2Client.create(applicationContext)
@@ -56,7 +72,7 @@ or applications requiring a predeclared issuer/app/project scope:
 val sdk = InappifyV2Client.create(
     applicationContext,
     InappifyV2Configuration(
-        // apiBaseUrl is optional; override only for an explicit HTTPS /app/v2/ test environment.
+        // apiBaseUrl is optional; the original constructor remains supported.
         issuer = backendConfiguration.issuer,
         appId = backendConfiguration.appId,
         projectId = backendConfiguration.projectId,
@@ -73,11 +89,17 @@ come from Android metadata. `InappifyOptions.appVersion` overrides version name.
 All identity/configuration responses are verified before persistence or publication.
 Only the signed `customer_info` is accepted; a mismatching unsigned twin rejects the response.
 
-Custom user IDs must follow the new server contract (16-100 characters, permitted
-ASCII characters, non-numeric). Existing V1 identity rules remain unchanged.
+Custom Go user IDs accept 1–100 Unicode code points, including numeric account IDs.
+Control characters, malformed UTF-8, edge whitespace and reserved anonymous
+prefixes are rejected. Existing V1 identity rules remain unchanged.
 Do not silently transform an existing customer ID; arrange aliases/migration with
 the backend if it does not meet V2 validation. Anonymous UUID-v4 IDs are generated
 and stored before the first configure call, so a timeout retains the same identity.
+Configure also sends `sdkVersion` and normalized `country`; country comes from
+explicit options, persisted context, or the `IR` fallback. The production factory
+does not contact a third-party IP-geolocation service. Go no longer sends or
+requires `forceVersion`; its snapshot reports null and `hasForceUpdate` is false.
+V1 still retains its original force-version synchronization.
 
 ### Public identity versus internal subject
 
@@ -142,9 +164,13 @@ the diagnostic executor and always redact Go bearer/session/JWS values.
 
 Login uses the Go session bearer, not the API key carried by the legacy request
 DTO. The API-key field in `InappifyLoginRequest` remains for source compatibility.
-A failed merge/verification/storage write keeps the previous identity.
+Before sending Login, a durable attempt hides the previous identity. An uncertain
+response is recovered with the same target and attempt header; it is not safe to
+continue using the previous account while the server may have merged it.
 An offline logout enters `isLogoutPending`, hides the old customer's data and
 disables account operations until the server logout succeeds.
+Older caches containing only a pending-logout boolean acquire a durable recovery
+attempt before the first replay. A storage failure does not bypass that barrier.
 
 ```kotlin
 sdk.queueAttributes(mapOf("campaign_source" to "summer", "old_key" to null))
@@ -161,20 +187,39 @@ network failures retain the queue. Queue contents never move to a new identity.
 
 Call `sdk.recover()` from a lifecycle-aware coroutine on startup/resume,
 connectivity restoration and return from a payment URL. Configure/login schedule
-recovery automatically. Recovery also completes a pending logout. Register a
-delivery handler before binding purchases. Host fulfillment must atomically
+recovery automatically. Recovery also completes a pending login/logout. Register a
+delivery handler before initiating fulfillment. Host fulfillment must atomically
 record App/Customer/deliveryId and grant inventory exactly once; callbacks must
 not re-enter SDK mutations while the fulfillment operation owns the state lock.
 
-## Purchase compatibility until the official bridge exists
+## Go commerce and legacy recovery
 
-Pages 29 and 50 explicitly state that Go SESSION_TOKEN is not Laravel CUSTOMER_TOKEN.
-No bridge route is defined in the supplied contract. A fresh Go session therefore
-cannot automatically purchase. Missing credentials fail with category CONFIGURATION
-and serverCode LARAVEL_CREDENTIAL_REQUIRED before opening Billing UI.
+The unreleased integration sends a Go session **Bearer** to commerce V2. It never
+places that token in the legacy JSON `token` field or calls a fabricated exchange
+endpoint. New Direct checkout uses `POST /app/v2/purchase`. Bazaar uses the
+`store/purchases`, verification, delivered and consume-result routes under the
+commerce base. Backend acceptance of this Bearer contract must be tested in staging.
 
-An application that already has a valid, securely held V1 customer token can retain
-its original native client and explicitly bind it:
+Fresh Go Direct/Bazaar purchases do not require `bindLegacyPurchaseClient`.
+Configure selects the server route; Bazaar needs its RSA public key from
+`InappifyOptions.marketKey` or the Configure response's `storeInfo`. Use an
+explicit product type and retain the same attempt on ambiguous failure.
+For consumables, the durable coordinator still requires verification, host delivery,
+acknowledgement, then Bazaar consumption. Non-consumables and subscriptions do not
+enter that delivery/consume flow. PROCESSING is not completed delivery.
+Unbound Go checkout rejects `discount`/`discountCode`; discount-code validation
+alone does not enable applying a discount to these purchases. Explicit legacy
+binding preserves the legacy discount workflow.
+
+An explicitly bound legacy companion retains the old purchase and recovery route
+for both Direct and Bazaar. This avoids switching already-paid legacy operations
+to a different authentication namespace during upgrade. Do not bind/unbind routes
+mid-fulfillment; complete the old journal with the same app/customer/route first.
+`GO_PURCHASE_RECOVERY_REQUIRED` blocks binding while matching native Go operations
+remain pending. `LEGACY_PURCHASE_REBIND_REQUIRED` blocks financial operations after
+a customer-binding change invalidates an existing companion; explicitly rebind
+matching clients, or recreate the Go client to deliberately choose the default route.
+An existing native client can be explicitly bound:
 
 ```kotlin
 // Both clients must already represent exactly the same app/customer/store.
@@ -185,12 +230,14 @@ val purchase = sdk.purchase(activity, purchaseRequest)
 Binding captures an independent purchase companion from the native V1 client.
 Subsequent V1 login/logout cannot change its customer scope; its session writes
 cannot overwrite V1 state. Keep the original client's transport alive while bound.
-Go login/logout unbinds it; bind again only after both identities match. No credentials
+An accepted customer-binding change unbinds it; a login retaining that binding
+need not. Bind again only after both identities match. No credentials
 appear in public snapshots. Do not obtain a legacy token through an invented/private
-endpoint. New installations require the official backend bridge before enabling purchases.
+endpoint. Unbound Direct checkout does not provide legacy fulfillment credentials;
+Direct consumable sync/confirmation still needs a matching legacy companion.
 
-The companion reuses the existing native Bazaar PROCESSING/poll/delivery/consume
-queue and Direct pending-delivery recovery. Only signed Go refresh can update the
+Unbound Go Bazaar reuses the durable native coordinator; the compatibility companion
+uses its original Bazaar/Direct recovery. Only signed Go refresh can update the
 Go client's entitlements afterward. A payment URL or purchase callback cannot grant
 Go access. Failed signed refresh leaves the last verified customer state; recover
 on lifecycle/connectivity to refresh again. Myket remains outside this phase.
@@ -201,7 +248,8 @@ Direct purchase attribution is additive:
 val attributed = purchaseRequest.withPaywallAttribution(paywallId, paywallRevision)
 ```
 
-The two fields are sent only to Laravel V1 purchase; old constructors omit them.
+The two fields are sent to Direct checkout (legacy V1 or Go commerce V2);
+old constructors omit them. Unbound Bazaar does not accept these fields.
 On revision error 110, refresh offerings and require a fresh user selection.
 
 ## Paywall fallback and schema boundary
@@ -242,7 +290,7 @@ targeting/discounts, purchase credential preconditions, and V1 regressions.
 Instrumentation covers real Keystore file isolation and native package-view layout;
 building the tests is not equivalent to running them on a device.
 
-Full staging/device verification, publisher trust-anchor review, credential bridge,
+Full staging/device verification, publisher trust-anchor review, Direct legacy fulfillment,
 remote Paywall schema/rendering, and operator canary/rollback acceptance remain
 release gates. `setNetworkEnabled(false)` is an explicit host-controlled kill switch;
 it keeps verified cache and prevents subsequent V2 requests. There is no automatic

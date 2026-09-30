@@ -2,7 +2,9 @@
 
 This is a code-derived implementation/acceptance checklist, not a claim that
 every device or backend integration has passed. The original design input was
-the September 2026 Go SDK V2 contract, version 1.1.
+the September 2026 Go SDK V2 contract, version 1.1. The matrix includes unreleased
+`fixVersion2` integration; historical release evidence below is not evidence for
+these new changes.
 
 Library 2.x contains two different V2 protocols: Laravel Store V2 payments and
 opt-in Go V2 customer/session APIs. `InappifyClient.create(context)` remains the
@@ -17,20 +19,23 @@ V1-compatible factory. See the [migration guide](docs/MIGRATION.md).
 | Store payments | Direct Android and Bazaar; explicit types, verification checkpoints, polling and recovery. Unsupported stores fail explicitly. |
 | Consumables | Host-owned idempotent inventory transaction; acknowledgement only after durable delivery, then Bazaar consume/report. |
 | Go trust | Pinned Ed25519, audience/version/scope/subject/time checks. Official factory discovers scope only from a verified response; explicit configuration can constrain it beforehand. |
-| Go identity | Stable anonymous UUID; verified session saved before publication; offline pending logout; internal signed subject separate from public user identifier. |
-| Go resources | Four cache policies, shared refreshes, server-selected offerings/placements, forceVersion/hasForceUpdate and write-only durable attributes. |
-| Purchase companion | Explicit, scope-matched legacy credentials in an isolated companion; Go Bearer tokens are never used as Laravel customer tokens. |
+| Go identity | Stable anonymous UUID; verified session saved before publication; durable pending login/logout attempts; internal signed subject separate from public user identifier. |
+| Go resources | Four cache policies, shared refreshes, server-selected offerings/placements and write-only durable attributes. Go does not use V1 forceVersion/hasForceUpdate. |
+| Go commerce | Unbound Direct checkout and Bazaar coordinator use session Bearer at the commerce V2 base; trace listeners cover both transports. |
+| Purchase companion | Explicit, scope-matched legacy credentials retain the legacy purchase/recovery route; Go Bearer tokens are never used as Laravel JSON customer tokens. |
 | Presentation | Native package fallback, compatibility/size/depth gates, app-owned typography and payment URL allowlists. |
 | Diagnostics | Opt-in filtered bounded HTTP exchanges plus storage and signature-stage context; no raw tracing helper in the release variant. |
 
 Go defaults to `https://service.inappify.com/app/v2/`.
+Unbound commerce defaults to `https://api.inappify.com/app/v2/`.
 V1 and Laravel Store V2 routes are unchanged.
 
 ## Not implemented or not guaranteed
 
 - Myket, Play Store, Apple stores and other enum-only stores.
 - An automatic Go-to-Laravel credential exchange: no official bridge endpoint is
-  implemented. Hosts need supported, separately configured purchase credentials.
+  implemented. Legacy Direct fulfillment still needs separately configured credentials;
+  fresh unbound commerce instead uses its distinct session-Bearer contract.
 - Complete rendering of arbitrary remote Paywall element/action documents.
   Unsupported documents must use the native package fallback.
 - A host inventory database or globally exactly-once fulfillment without a
@@ -43,6 +48,22 @@ The publisher must review the bundled official signing pin and its rotation
 plan. Runtime key discovery cannot establish trust in unrelated key material.
 
 ## Local evidence
+
+### Unreleased fixVersion2 integration — September 30, 2026
+
+All **485 SDK JVM tests in 29 suites** passed with zero failures, errors or skips.
+Release lint reported zero issues. The release AAR and instrumentation APK were
+built; instrumentation was compiled, not executed. The final local validation
+used cached dependencies/offline mode after the initial dependency download.
+
+The fresh candidate release AAR retains the checked public/protected JVM surface
+of V1 (**50 classes / 475 members**) and V2.1 (**86 classes / 681 members**).
+The candidate has **86 classes / 690 members**. The comparison found no removed
+descriptors, narrowed visibility, incompatible static/final/abstract changes or
+removed supertypes. In particular, the original configuration constructor,
+Kotlin default-argument constructor and `getApiBaseUrl()` remain present.
+This does not certify Kotlin metadata, generic signatures, reflection or runtime
+behavior. Device upgrade, live backend and payment acceptance remain separate.
 
 ### 2.1.0 — September 19, 2026
 

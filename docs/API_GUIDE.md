@@ -1,6 +1,6 @@
 # Android SDK API and behavior guide
 
-This guide describes library 2.1.0 as implemented, including failure and cache
+This guide describes current source (2.1.0 plus unreleased fixVersion2 integration), including failure and cache
 semantics. Start with [installation](../README.md#installation), then read
 [migration hints](MIGRATION.md) for an existing app.
 
@@ -10,11 +10,11 @@ semantics. Start with [installation](../README.md#installation), then read
 | --- | --- | --- |
 | `InappifyClient.create(context)` / V1 | API key and customer token in JSON | Existing lifecycle, resources and Direct checkout. |
 | Bazaar Store V2 in the default client | Configured Laravel credentials in JSON | Store receipts, verification, delivery and consume reporting. |
-| `InappifyV2Client.create(context)` / Go | Public SDK Bearer key for Configure; Go session Bearer afterwards | Signed customer/session APIs, offerings and attributes. |
+| `InappifyV2Client.create(context)` / Go | Public SDK Bearer key for Configure; Go session Bearer afterwards | Signed customer/session APIs, offerings, attributes and unbound commerce V2. |
 
 The library version, HTTP route version, Paywall schema version and server
 `forceVersion` are different values. A successful Go Configure does not supply
-Laravel purchase credentials.
+Laravel JSON purchase credentials; unbound commerce V2 uses a separate Bearer contract.
 
 Keep one authoritative client in an Application/DI scope. Instances own their
 memory/listeners/network resources, but production instances of the same
@@ -129,9 +129,9 @@ See [Go integration](../V2_MIGRATION.md) for complete configuration and cache ru
 It is not a username/password login to Bazaar and is not an SDK API key or
 session token. Use the same backend account ID on every device.
 
-V1 retains its established login/logout contract. Go custom IDs are more
-restrictive: 16–100 characters, start with ASCII letter/digit, remaining characters
-from letters/digits and `._:-`, not entirely numeric or a forbidden placeholder.
+V1 retains its established login/logout contract. Go custom IDs accept 1–100
+Unicode code points (numeric IDs included), without controls, edge whitespace,
+malformed UTF-8 or reserved anonymous prefixes.
 Do not silently transform an old identifier into a new account.
 
 Go's signed `sub` is an internal customer subject, not the public UUID.
@@ -139,7 +139,7 @@ The signed customer's `originalAppUserId` must match the public requested
 identity. Refresh/renew/cache preserve the internal subject; verified lifecycle
 transitions can establish a new binding.
 
-Identity transitions serialize with mutations/fulfillment. Go offline logout
+Identity transitions serialize with mutations/fulfillment. Go uncertain login and offline logout
 persists a pending intent and hides the prior user; recovery must complete that
 logout before treating a session as active. Cache/queued attributes are
 identity-scoped. Rebind the legacy purchase companion after identity changes.
@@ -158,9 +158,11 @@ ledger and UI to the configured app/customer.
 | `refreshOfferings()` | Network refresh. | NETWORK_ONLY. |
 | `snapshot` and local entitlement helpers | Memory only. | Memory only, with Go entitlement expiry checks. |
 
-Offerings are invalidated by relevant identity, targeting or force-version
+Offerings are invalidated by relevant identity, targeting or V1 force-version
 changes. A stale selected product must not be used to initiate a new purchase.
-`forceVersion` is server synchronization state, not the SDK version.
+`forceVersion` is V1 server synchronization state, not the SDK version. Go no
+longer uses it and reports null; Go `hasForceUpdate` is false. New Go sessions
+invalidate offerings so callers must refresh/reselect before a new checkout.
 
 Go's explicit `customerInfo(policy)` and `offerings(policy)` provide:
 
@@ -225,6 +227,9 @@ Go attributes are write-only:
 `validateDiscountCode(InappifyDiscountCodeRequest(...))` performs validation.
 Inspect the returned business result; a completed HTTP request does not make a
 discount valid. Do not reuse dynamic price tokens across unrelated purchases.
+Unbound Go Direct/Bazaar checkout rejects `discount` and `discountCode`; validation
+does not imply support for applying them. An explicitly bound legacy companion
+retains its legacy discount behavior.
 
 ## Purchase routes, results and fulfillment
 
@@ -291,7 +296,9 @@ for the default client refresh customer data and sync pending consumables.
 `restorePurchases()` reports independent restored/already-processed/failed
 counts. `syncPendingConsumables()` drains applicable pending deliveries and
 returns unresolved items. Aggregate Success can contain individual failures or
-pending deliveries.
+pending deliveries in APIs exposing per-record results. Unbound Go sync continues
+independent records, but returns Failure if deferred/error work remains. That
+failure does not roll back other deliveries completed during the same operation.
 
 Invoke recovery on startup/foreground and connectivity restoration. Background
 reconciliation/polling is bounded, not an Android job guaranteed to run while
@@ -303,7 +310,9 @@ already committed store charge or a global firewall for other clients.
 
 `addEventListener` returns a registration; close it with the observing component.
 Events carry immutable state snapshots and include state, authentication,
-customer, offerings and purchase updates. Multiple events can share a revision.
+customer, offerings and, on the default client, purchase updates. Go currently
+publishes state/authentication/customer/offerings events; inspect purchase results
+instead of depending on a Go `PURCHASE_UPDATED` event. Multiple events can share a revision.
 
 V1 events run on an ordered SDK executor, not necessarily the main thread.
 The production Go dispatcher is Main.immediate. Always respect your UI
@@ -320,6 +329,9 @@ V1 session, Go session and pending receipt journal use separate encrypted
 app-private persistence. Writes are atomic/file-locked, but app inventory
 transactions are not part of that same transaction. Use a durable idempotency
 ledger to cross that boundary safely.
+Native Go receipt journals additionally bind to the canonical commerce endpoint,
+separately from SDK session cache. A commerce-endpoint change cannot replay or
+confirm the old endpoint's receipts; recover them using the original endpoint.
 
 Android 23+ uses Keystore AES-GCM; Android 21/22 uses a random AES key wrapped
 by Keystore RSA. Encryption lets the provider generate the IV. Data is stored
@@ -344,8 +356,9 @@ A release consumer should not depend on those factories.
 
 ## Limits and release evidence
 
-Only Direct Android and Cafe Bazaar payments are implemented. Go purchase
-bridging needs separately configured matching legacy credentials; full remote
+Only Direct Android and Cafe Bazaar payments are implemented. Unbound Go commerce
+uses its session Bearer at the commerce V2 endpoint. Explicit legacy binding keeps
+the old route and is still required for Direct consumable reconciliation. Full remote
 Paywall element rendering and automatic credential exchange are not implemented.
 The native package fallback is not a complete remote schema renderer.
 

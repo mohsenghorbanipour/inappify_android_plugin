@@ -15,7 +15,7 @@ class GoAutoConfigureTest {
     private val signing = SigningFixture()
     private val store = MemoryV2Store()
     private val requests = V2Transport()
-    private var environment = GoV2Environment(signing.config.apiBaseUrl, signing.config.pinnedSigningKeys)
+    private var environment = GoV2Environment(signing.config.sdkApiBaseUrl, signing.config.pinnedSigningKeys)
     private val options = InappifyOptions("test-public-key")
     private val metadata = AppMetadataProvider { AppMetadata("com.example.mobile", "2.4.0", 20400) }
 
@@ -33,7 +33,9 @@ class GoAutoConfigureTest {
         requests.handler = { req ->
             val body = jsonObject(req.jsonBody)
             val saved = jsonObject(store.value!!.customerInfoJson!!)
-            assertEquals(setOf("appUserIdentifier", "identifierValue", "versionName", "versionCode"), body.keySet())
+            assertEquals(setOf("appUserIdentifier", "identifierValue", "versionName", "versionCode", "sdkVersion", "country"), body.keySet())
+            assertEquals("IR", body.string("country"))
+            assertEquals(BuildConfig.SDK_VERSION, body.string("sdkVersion"))
             assertEquals("Bearer test-public-key", req.headers["Authorization"])
             assertEquals("com.example.mobile", body.string("identifierValue"))
             assertEquals("2.4.0", body.string("versionName"))
@@ -160,16 +162,57 @@ class GoAutoConfigureTest {
         }
     }
 
-    @Test fun loginAlsoRejectsCrossProjectSessionWithoutReplacingIdentity() = runBlocking {
+    @Test fun loginRejectsCrossProjectSessionAndRecoversOnlyTheDurableSameScopeAttempt() = runBlocking {
         respondToConfigure()
+        val target = "customer_other_123456"
+        var predecessorToken: String? = null
+        var attemptId: String? = null
         client().use { sdk ->
             assertTrue(sdk.configure(options) is InappifyResult.Success)
-            val before = sdk.snapshot.appUserIdentifier
-            requests.handler = { requests.response(signing.envelope("customer_other_123456",
-                mutatePayload = { it.addProperty("project_id", 35) })) }
-            assertTrue(sdk.login(InappifyLoginRequest(options.apiKey, "customer_other_123456")) is InappifyResult.Failure)
-            assertEquals(before, sdk.snapshot.appUserIdentifier)
-            assertEquals(34L, sdk.verifiedSessionScope!!.projectId)
+            val before = jsonObject(store.value!!.customerInfoJson!!)
+            predecessorToken = before.getAsJsonObject("session").string("sessionToken")
+            requests.handler = { requests.response(signing.envelope(target,
+                mutatePayload = { it.addProperty("project_id", 35) }).apply {
+                    addProperty("sessionToken", "rejected-cross-project-token")
+                }) }
+            val rejected = sdk.login(InappifyLoginRequest(options.apiKey, target)) as InappifyResult.Failure
+            assertEquals("SIGNATURE", rejected.error.details["category"])
+            assertEquals("project_id", rejected.error.details["mismatchField"])
+            assertEquals("login", rejected.error.details["operation"])
+            assertEquals(true, rejected.error.details["outcomeMayHaveCommitted"])
+            // A rejected HTTP-success login may still have committed remotely.
+            // Keep the predecessor for replay, but grant access to neither identity.
+            assertFalse(sdk.snapshot.isConfigured)
+            assertNull(sdk.snapshot.appUserIdentifier)
+            assertNull(sdk.snapshot.customerInfo)
+            assertNull(sdk.verifiedSessionScope)
+            assertFalse(sdk.hasEntitlement("pro"))
+            assertTrue(sdk.customerInfo(InappifyFetchPolicy.CACHE_ONLY) is InappifyResult.Failure)
+            val saved = jsonObject(store.value!!.customerInfoJson!!)
+            assertEquals(before.getAsJsonObject("session"), saved.getAsJsonObject("session"))
+            assertEquals(before.getAsJsonObject("info"), saved.getAsJsonObject("info"))
+            assertEquals(before.getAsJsonObject("scope"), saved.getAsJsonObject("scope"))
+            assertEquals(before.string("customerSubject"), saved.string("customerSubject"))
+            assertEquals(target, saved.getAsJsonObject("pendingLogin").string("appUserId"))
+            attemptId = saved.getAsJsonObject("pendingLogin").string("attemptId")
+            assertEquals(attemptId, requests.requests.last().headers["X-Inappify-Login-Attempt"])
+        }
+        requests.requests.clear()
+        requests.handler = { request ->
+            assertEquals("login", request.path)
+            assertEquals("Bearer $predecessorToken", request.headers["Authorization"])
+            assertEquals(attemptId, request.headers["X-Inappify-Login-Attempt"])
+            assertEquals(target, jsonObject(request.jsonBody).string("appUserIdentifier"))
+            requests.response(signing.envelope(target))
+        }
+        client().use { restarted ->
+            assertTrue(restarted.configure(options) is InappifyResult.Success)
+            assertEquals(target, restarted.snapshot.appUserIdentifier)
+            assertEquals(target, restarted.snapshot.customerInfo?.originalAppUserId)
+            assertEquals(34L, restarted.verifiedSessionScope!!.projectId)
+            assertTrue(restarted.snapshot.isAuthenticated)
+            assertFalse(jsonObject(store.value!!.customerInfoJson!!).has("pendingLogin"))
+            assertEquals(1, requests.requests.size)
         }
     }
 
@@ -277,7 +320,7 @@ class GoAutoConfigureTest {
     @Test fun defaultFactoryIsAdditiveAndProductionTrustIsNotAnAppInput() {
         val env = GoV2Environment.production()
         assertNull(env.expectedScope)
-        assertEquals(InappifyV2Configuration.DEFAULT_API_BASE_URL, env.apiBaseUrl)
+        assertEquals(InappifyV2Configuration.DEFAULT_SDK_API_BASE_URL, env.sdkApiBaseUrl)
         assertEquals(32, base64Url(env.pinnedSigningKeys.values.single()).size)
         assertNotNull(InappifyV2Client::class.java.getDeclaredMethod("create", Context::class.java))
         assertNotNull(InappifyV2Client::class.java.getDeclaredMethod("create", Context::class.java, InappifyV2Configuration::class.java))

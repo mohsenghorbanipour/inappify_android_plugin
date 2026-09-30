@@ -95,7 +95,9 @@ public class InappifySnapshot internal constructor(
     internal companion object {
 
         /** Creates the state held before the first successful configuration. */
-        internal fun initial(sdkVersion: String): InappifySnapshot =
+        internal fun initial(sdkVersion: String): InappifySnapshot = initial(sdkVersion, 1L)
+
+        internal fun initial(sdkVersion: String, forceVersion: Long?): InappifySnapshot =
             InappifySnapshot(
                 revision = 0,
                 isConfigured = false,
@@ -106,7 +108,7 @@ public class InappifySnapshot internal constructor(
                 appVersion = null,
                 sdkVersion = sdkVersion,
                 storeInfo = null,
-                forceVersion = 1L,
+                forceVersion = forceVersion,
                 appId = null,
                 customerInfo = null,
                 offerings = null,

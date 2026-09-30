@@ -23,8 +23,8 @@ verified response. The explicit-configuration overload remains available. It use
 and bearer sessions, independently of the Laravel store v2 described below.
 See [the migration guide](V2_MIGRATION.md) and [acceptance matrix](V2_CONTRACT.md).
 The original `InappifyClient.create(context)` continues to use V1.
-The Go integration is pre-release: the purchase credential bridge,
-the full remote Paywall schema and staging/device acceptance
+The unreleased Go integration adds session-Bearer commerce; legacy Direct
+fulfillment still needs a matching companion. The full remote Paywall schema and staging/device acceptance
 are still required before production rollout.
 
 ## Documentation
@@ -34,7 +34,7 @@ are still required before production rollout.
 - [V1 → V2 migration hints](docs/MIGRATION.md): what to keep, what to change,
   routing examples, retries, and upgrade acceptance.
 - [Go V2 integration](V2_MIGRATION.md): signed sessions, fetch policies,
-  write-only attributes, and the separate purchase-credential bridge.
+  write-only attributes, commerce endpoints and legacy fulfillment compatibility.
 - [Release scope and limitations](V2_CONTRACT.md).
 - [Changelog](CHANGELOG.md) and [release verification checklist](docs/RELEASING.md).
 

@@ -19,17 +19,33 @@ public class InappifyV2Configuration public constructor(
     paymentHosts: Set<String>,
     assetHosts: Set<String> = emptySet(),
 ) {
+    /** Alias for the original endpoint property; the V2.0/V2.1 constructor remains binary compatible. */
+    public val sdkApiBaseUrl: String get() = apiBaseUrl
+    public var commerceApiBaseUrl: String = defaultCommerceBaseUrl(apiBaseUrl)
+        private set
+
+    /** Adds a separate commerce endpoint without replacing the original Kotlin default constructor. */
+    public constructor(
+        sdkApiBaseUrl: String = DEFAULT_SDK_API_BASE_URL,
+        issuer: String,
+        appId: Long,
+        projectId: Long,
+        pinnedSigningKeys: Map<String, String>,
+        paymentHosts: Set<String>,
+        assetHosts: Set<String> = emptySet(),
+        commerceApiBaseUrl: String,
+    ) : this(sdkApiBaseUrl, issuer, appId, projectId, pinnedSigningKeys, paymentHosts, assetHosts) {
+        validateBaseUrl(commerceApiBaseUrl, "Commerce API")
+        this.commerceApiBaseUrl = commerceApiBaseUrl
+    }
     /** kid to unpadded base64url encoded, raw 32-byte Ed25519 public key. */
     public val pinnedSigningKeys: Map<String, String> =
         Collections.unmodifiableMap(LinkedHashMap(pinnedSigningKeys))
     public val paymentHosts: Set<String> = Collections.unmodifiableSet(LinkedHashSet(paymentHosts))
     public val assetHosts: Set<String> = Collections.unmodifiableSet(LinkedHashSet(assetHosts))
     init {
-        val url = apiBaseUrl.toHttpUrl()
-        require(url.isHttps && url.username.isEmpty() && url.password.isEmpty() &&
-            url.query == null && url.fragment == null && url.encodedPath == "/app/v2/") {
-            "Go base URL must be an HTTPS origin followed by /app/v2/."
-        }
+        validateBaseUrl(apiBaseUrl, "SDK API")
+        validateBaseUrl(commerceApiBaseUrl, "Commerce API")
         require(issuer.isNotBlank() && appId > 0 && projectId > 0)
         require(pinnedSigningKeys.isNotEmpty() && pinnedSigningKeys.keys.all { it.isNotBlank() })
         require((paymentHosts + assetHosts).all { host ->
@@ -41,6 +57,19 @@ public class InappifyV2Configuration public constructor(
     public companion object {
         /** Official /app service root plus the Go v2 route prefix; V1 routing is independent. */
         public const val DEFAULT_API_BASE_URL: String = "https://service.inappify.com/app/v2/"
+        public const val DEFAULT_SDK_API_BASE_URL: String = "https://service.inappify.com/app/v2/"
+        public const val DEFAULT_COMMERCE_API_BASE_URL: String = "https://api.inappify.com/app/v2/"
+
+        private fun defaultCommerceBaseUrl(sdkUrl: String): String =
+            if (sdkUrl == DEFAULT_SDK_API_BASE_URL) DEFAULT_COMMERCE_API_BASE_URL else sdkUrl
+
+        private fun validateBaseUrl(value: String, label: String) {
+            val url = value.toHttpUrl()
+            require(url.isHttps && url.username.isEmpty() && url.password.isEmpty() &&
+                url.query == null && url.fragment == null && url.encodedPath == "/app/v2/") {
+                "$label base URL must be an HTTPS origin followed by /app/v2/."
+            }
+        }
     }
 }
 
@@ -60,9 +89,13 @@ public interface InappifyV2Client : InappifyClient {
     /** Stops v2 network use without discarding verified cache; host owns rollout flags. */
     public fun setNetworkEnabled(enabled: Boolean)
     /**
-     * Retains an already configured legacy purchase client until the official credential bridge
-     * is available. The client must have the same app and customer, and remain owned by the host.
-     * Rebind after login/logout; this method never obtains or exchanges a token.
+     * Explicitly selects the V1-compatible payment workflow for both Direct and Bazaar,
+     * including purchase, recovery and delivery confirmation. Without binding, new payments
+     * use the Go session bearer against Laravel V2. The client must have the same app,
+     * customer and store. Binding is rejected while matching Go store operations are pending;
+     * finish that workflow before switching routes. After an identity change, financial
+     * calls require rebinding instead of silently switching to Go commerce. Rebind after
+     * login/logout or recreate a client explicitly to select the default Go route again.
      */
     public suspend fun bindLegacyPurchaseClient(client: InappifyClient): InappifyResult<Unit>
 

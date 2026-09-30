@@ -3,6 +3,34 @@
 Library versions are independent of the V1, Laravel Store V2 and Go V2 HTTP
 protocols. See the [upgrade guide](docs/MIGRATION.md) before changing factories.
 
+## [Unreleased] - fixVersion2 integration
+
+- Separate Go SDK and commerce endpoints. Unbound Go Direct checkout and Bazaar
+  purchase/verification/delivery use the Go session Bearer at commerce V2;
+  explicitly bound legacy clients retain their purchase/recovery route.
+- Retain the original `InappifyV2Configuration` constructor, Kotlin default-argument
+  entry point, `apiBaseUrl` getter and `DEFAULT_API_BASE_URL` constant. The named
+  SDK endpoint alias and separate commerce constructor are additive.
+- Persist Login/Logout attempt headers for uncertain lifecycle recovery; migrate
+  old pending-logout caches without exposing their previous customer. Go custom
+  IDs accept 1–100 Unicode code points without controls/edge whitespace/reserved
+  anonymous prefixes. Existing valid anonymous UUID casing remains accepted.
+- Configure sends SDK version and normalized country. Go no longer uses V1
+  `forceVersion`; legacy behavior is unchanged. Default construction performs no
+  third-party IP-geolocation request.
+- Harden Go store receipt recovery, result parsing, delivery cancellation and
+  disabled-network checks; retain Direct legacy delivery confirmation and forward
+  redacted traces from both Go transports. See [Go migration](V2_MIGRATION.md).
+- Scope native Go receipt journals to their commerce endpoint independently of
+  session cache; block ambiguous route changes while purchases require recovery
+  or a previously bound legacy companion needs explicit rebinding.
+- Keep the Gradle 8.7 / AGP 8.5.1 / Kotlin 1.9 / Android API 21-compatible dependency
+  set. Uncoordinated main-branch dependency bumps require a separate toolchain
+  migration; this integration does not raise the library's minimum Android API.
+
+These are unreleased source changes, not a new published 2.1.0 artifact. Live Go
+commerce/backend and real-device acceptance remain required before release.
+
 ## [2.1.0] - 2026-09-19
 
 ### Added

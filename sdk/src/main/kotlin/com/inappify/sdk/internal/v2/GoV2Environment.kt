@@ -6,10 +6,12 @@ import com.inappify.sdk.InappifyV2SessionScope
 
 /** Service trust is SDK configuration; app/project scope may be learned only after signature verification. */
 internal class GoV2Environment(
-    val apiBaseUrl: String,
+    val sdkApiBaseUrl: String,
     pinnedSigningKeys: Map<String, String>,
     val expectedScope: InappifyV2SessionScope? = null,
     paymentHosts: Set<String> = emptySet(),
+    val commerceApiBaseUrl: String = if (sdkApiBaseUrl == InappifyV2Configuration.DEFAULT_SDK_API_BASE_URL)
+        InappifyV2Configuration.DEFAULT_COMMERCE_API_BASE_URL else sdkApiBaseUrl,
 ) {
     val pinnedSigningKeys = pinnedSigningKeys.toMap()
     val paymentHosts = paymentHosts.toSet()
@@ -18,12 +20,13 @@ internal class GoV2Environment(
 
     companion object {
         fun explicit(config: InappifyV2Configuration) = GoV2Environment(
-            config.apiBaseUrl, config.pinnedSigningKeys,
+            config.sdkApiBaseUrl, config.pinnedSigningKeys,
             InappifyV2SessionScope(config.issuer, config.appId, config.projectId), config.paymentHosts,
+            config.commerceApiBaseUrl,
         )
 
         fun production() = GoV2Environment(
-            InappifyV2Configuration.DEFAULT_API_BASE_URL,
+            InappifyV2Configuration.DEFAULT_SDK_API_BASE_URL,
             // Public signing key obtained over verified HTTPS from the operator-confirmed
             // /app/v2/public-keys endpoint on 2026-09-12. This is NOT an API key or private key.
             // Runtime JWKS downloads cannot replace this trust anchor with different key material.

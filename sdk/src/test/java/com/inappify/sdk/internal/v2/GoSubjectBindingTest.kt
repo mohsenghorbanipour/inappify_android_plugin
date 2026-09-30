@@ -19,7 +19,7 @@ class GoSubjectBindingTest {
     private val options = InappifyOptions("public-test-key")
     private var publicId = anonymousId()
     private var internalId = "91001"
-    private val environment = GoV2Environment(signing.config.apiBaseUrl, signing.config.pinnedSigningKeys)
+    private val environment = GoV2Environment(signing.config.sdkApiBaseUrl, signing.config.pinnedSigningKeys)
 
     private fun client() = GoV2Client(environment, GoApi(transport, { signing.now }, {}), store,
         AppMetadataProvider { AppMetadata("com.example.test", "2.0", 200) },
@@ -42,7 +42,7 @@ class GoSubjectBindingTest {
                 }
                 "logout" -> { publicId = anonymousId(); transport.response(envelope()) }
                 "customerInfo" -> transport.response(envelope())
-                "offerings" -> transport.response(jsonObject("""{"status":true,"forceVersion":4,"hasForceUpdate":false,"offerings":[]}"""))
+                "offerings" -> transport.response(jsonObject("""{"status":true,"offerings":[]}"""))
                 "attributes" -> TransportResult.Response(HttpResponse(204, null, null))
                 else -> error("Unexpected endpoint: ${req.path}")
             }
@@ -224,16 +224,18 @@ class GoSubjectBindingTest {
         }
     }
 
-    @Test fun failedLoginCannotReplaceBindingOrCachedIdentity() = runBlocking {
+    @Test fun failedLoginCannotReplaceBindingAndKeepsUncertainIdentityHidden() = runBlocking {
         client().use { sdk ->
             configure(sdk)
-            val before = sdk.snapshot
             transport.handler = { transport.response(envelope(identity = "wrong_public_identity_123", subject = "91002")) }
             val failure = error(sdk.login(InappifyLoginRequest(options.apiKey, "requested_public_identity_123")))
             assertEquals("appUserId", failure.details["mismatchField"])
             assertEquals("login", failure.details["operation"])
             assertEquals(200, failure.details["httpStatus"])
-            assertEquals(before, sdk.snapshot)
+            assertFalse(sdk.snapshot.isConfigured)
+            assertNull(sdk.snapshot.appUserIdentifier)
+            assertNull(sdk.snapshot.customerInfo)
+            assertTrue(saved().has("pendingLogin"))
             assertEquals(internalId, saved().string("customerSubject"))
         }
     }

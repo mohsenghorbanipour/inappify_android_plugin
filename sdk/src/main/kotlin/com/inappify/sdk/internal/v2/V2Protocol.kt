@@ -245,7 +245,7 @@ internal class GoApi(
             ?: InappifyListenerRegistration.create(Runnable {})
     @Volatile var enabled = true
     suspend fun request(endpoint: String, token: String?, body: JsonObject = JsonObject(),
-        retry: Boolean = true): JsonObject {
+        retry: Boolean = true, headers: Map<String, String> = emptyMap()): JsonObject {
         if (!enabled) fail("CONFIGURATION", "V2_DISABLED")
         val raw = body.toString()
         if (raw.toByteArray().size > 1024 * 1024) fail("VALIDATION", "BODY_TOO_LARGE")
@@ -256,6 +256,7 @@ internal class GoApi(
                 headers = buildMap {
                     put("User-Agent", "InAppify-Android/${BuildConfig.SDK_VERSION}")
                     token?.let { put("Authorization", "Bearer $it") }
+                    putAll(headers)
                 }))
             if (response is TransportResult.Failure) {
                 val category = when (response.kind) {
@@ -270,7 +271,7 @@ internal class GoApi(
             }
             val http = (response as TransportResult.Response).response
             if (http.statusCode == 204 && endpoint == "attributes") return JsonObject()
-            if (http.statusCode in setOf(429, 500, 503) && retry && attempt < 3) {
+            if (http.statusCode in setOf(429, 500, 502, 503, 504) && retry && attempt < 3) {
                 sleep(retryDelay(attempt, http.headers)); return@repeat
             }
             val json = try { jsonObject(http.body ?: "") } catch (_: V2Failure) {
@@ -278,8 +279,11 @@ internal class GoApi(
                 JsonObject()
             }
             if (http.statusCode != 200 || json.get("status") == JsonPrimitive(false)) {
+                val numericCode = json.get("errorCode")?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isNumber }
+                    ?.asString?.toLongOrNull()?.takeIf { it >= 0 }
                 val code = json.get("code")?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isString }
-                    ?.asString?.takeIf { it.matches(Regex("[A-Z0-9_]{1,80}")) } ?: "HTTP_${http.statusCode}"
+                    ?.asString?.takeIf { it.matches(Regex("[A-Z0-9_]{1,80}")) }
+                    ?: numericCode?.let { "ERROR_CODE_$it" } ?: "HTTP_${http.statusCode}"
                 val category = when {
                     code.startsWith("PUBLIC_API_KEY") || code == "APP_IDENTIFIER_INVALID" -> "CONFIGURATION"
                     http.statusCode == 401 || http.statusCode == 403 -> "AUTH"
@@ -287,7 +291,8 @@ internal class GoApi(
                     http.statusCode == 429 -> "RATE_LIMIT"
                     else -> "SERVER"
                 }
-                fail(category, code, http.statusCode in setOf(429, 500, 503), http.statusCode)
+                fail(category, code, http.statusCode in setOf(429, 500, 502, 503, 504),
+                    http.statusCode, numericCode?.let { mapOf("errorCode" to it) } ?: emptyMap())
             }
             if (endpoint != "public-keys" && !json.flag("status")) fail("DECODING", "INVALID_STATUS")
             return json

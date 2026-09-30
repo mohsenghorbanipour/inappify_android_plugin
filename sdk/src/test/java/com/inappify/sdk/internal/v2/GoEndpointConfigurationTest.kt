@@ -27,9 +27,10 @@ class GoEndpointConfigurationTest {
 
     @Test fun officialServiceRootIncludesExactlyOneGoVersionPrefix() {
         val config = defaultConfiguration()
-        assertEquals("https://service.inappify.com/app/v2/", config.apiBaseUrl)
+        assertEquals("https://service.inappify.com/app/v2/", config.sdkApiBaseUrl)
+        assertEquals("https://api.inappify.com/app/v2/", config.commerceApiBaseUrl)
         assertEquals("https://service.inappify.com/app/v2/configure",
-            config.apiBaseUrl.toHttpUrl().resolve("configure").toString())
+            config.sdkApiBaseUrl.toHttpUrl().resolve("configure").toString())
         // Only the service URL has a default: trust and tenant settings remain explicit.
         assertEquals(fixture.config.issuer, config.issuer)
         assertEquals(fixture.config.pinnedSigningKeys, config.pinnedSigningKeys)
@@ -38,10 +39,25 @@ class GoEndpointConfigurationTest {
     @Test fun explicitBackendUrlAndExistingConstructorRemainSupported() {
         val config = InappifyV2Configuration("https://staging.example.com/app/v2/",
             fixture.config.issuer, 12, 34, fixture.config.pinnedSigningKeys, emptySet(), emptySet())
-        assertEquals("https://staging.example.com/app/v2/", config.apiBaseUrl)
+        assertEquals("https://staging.example.com/app/v2/", config.sdkApiBaseUrl)
+        assertEquals("https://staging.example.com/app/v2/", config.commerceApiBaseUrl)
         assertNotNull(InappifyV2Configuration::class.java.getConstructor(
             String::class.java, String::class.java, Long::class.javaPrimitiveType,
             Long::class.javaPrimitiveType, Map::class.java, Set::class.java, Set::class.java))
+    }
+
+    @Test fun sdkAndCommerceUrlsCanBeConfiguredIndependently() {
+        val config = InappifyV2Configuration(
+            sdkApiBaseUrl = "https://sdk.staging.example.com/app/v2/",
+            issuer = fixture.config.issuer,
+            appId = 12,
+            projectId = 34,
+            pinnedSigningKeys = fixture.config.pinnedSigningKeys,
+            paymentHosts = emptySet(),
+            commerceApiBaseUrl = "https://commerce.staging.example.com/app/v2/",
+        )
+        assertEquals("https://sdk.staging.example.com/app/v2/", config.sdkApiBaseUrl)
+        assertEquals("https://commerce.staging.example.com/app/v2/", config.commerceApiBaseUrl)
     }
 
     @Test fun defaultDoesNotWeakenExplicitUrlValidation() {
@@ -64,7 +80,7 @@ class GoEndpointConfigurationTest {
                 .code(200).message("OK")
                 .body("""{"status":true}""".toResponseBody("application/json".toMediaType())).build()
         }.build()
-        val api = GoApi(OkHttpTransport.create(defaultConfiguration().apiBaseUrl.toHttpUrl(), http), { fixture.now })
+        val api = GoApi(OkHttpTransport.create(defaultConfiguration().sdkApiBaseUrl.toHttpUrl(), http), { fixture.now })
         val endpoints = listOf("configure", "public-keys", "customerInfo", "login", "logout",
             "attributes", "offerings", "validateDiscountCode")
         try {
