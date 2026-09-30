@@ -1,7 +1,7 @@
 # Opt-in Go SDK v2
 
-The released baseline follows `InAppify-SDK-V2.pdf` document 1.1; the unreleased
-`fixVersion2` integration adds the commerce/session behavior described below. Go v2 session
+The original baseline follows `InAppify-SDK-V2.pdf` document 1.1; library 2.2.0
+adds the commerce/session behavior described below. Go v2 session
 APIs and Laravel store v2 are different protocols. Existing V1 applications
 continue to use `InappifyClient.create(context)` without changes.
 
@@ -194,7 +194,7 @@ not re-enter SDK mutations while the fulfillment operation owns the state lock.
 
 ## Go commerce and legacy recovery
 
-The unreleased integration sends a Go session **Bearer** to commerce V2. It never
+The integration in 2.2.0 sends a Go session **Bearer** to commerce V2. It never
 places that token in the legacy JSON `token` field or calls a fabricated exchange
 endpoint. New Direct checkout uses `POST /app/v2/purchase`. Bazaar uses the
 `store/purchases`, verification, delivered and consume-result routes under the

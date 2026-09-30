@@ -7,7 +7,12 @@
 Native Android SDK for Inappify purchases, customer information, offerings,
 entitlements, discount codes, and customer attributes.
 
-Version 2.1.0 adds opt-in, identity-bound offline session restoration while
+Version 2.2.0 adds native Go session-Bearer commerce, durable login/logout recovery,
+and compatibility safeguards for existing V1 and explicitly bound legacy clients.
+Review the [2.1 → 2.2 migration notes](docs/MIGRATION.md#upgrading-from-21-to-22)
+before enabling the new Go payment route.
+
+Since 2.1.0, opt-in, identity-bound offline session restoration is available while
 preserving the original network-first Configure API. See
 [offline startup](docs/OFFLINE_CACHE.md) for local display followed by background refresh.
 
@@ -23,7 +28,7 @@ verified response. The explicit-configuration overload remains available. It use
 and bearer sessions, independently of the Laravel store v2 described below.
 See [the migration guide](V2_MIGRATION.md) and [acceptance matrix](V2_CONTRACT.md).
 The original `InappifyClient.create(context)` continues to use V1.
-The unreleased Go integration adds session-Bearer commerce; legacy Direct
+The Go integration in 2.2.0 adds session-Bearer commerce; legacy Direct
 fulfillment still needs a matching companion. The full remote Paywall schema and staging/device acceptance
 are still required before production rollout.
 
@@ -93,7 +98,7 @@ Add the versioned library module:
 dependencies {
     implementation(
         "com.github.mohsenghorbanipour:" +
-            "inappify_android_plugin:v2.1.0",
+            "inappify_android_plugin:v2.2.0",
     )
 }
 ```

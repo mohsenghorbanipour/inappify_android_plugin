@@ -2,9 +2,9 @@
 
 This is a code-derived implementation/acceptance checklist, not a claim that
 every device or backend integration has passed. The original design input was
-the September 2026 Go SDK V2 contract, version 1.1. The matrix includes unreleased
-`fixVersion2` integration; historical release evidence below is not evidence for
-these new changes.
+the September 2026 Go SDK V2 contract, version 1.1. The matrix includes the 2.2.0
+commerce/session integration; evidence for older releases does not certify
+the newer changes.
 
 Library 2.x contains two different V2 protocols: Laravel Store V2 payments and
 opt-in Go V2 customer/session APIs. `InappifyClient.create(context)` remains the
@@ -49,12 +49,16 @@ plan. Runtime key discovery cannot establish trust in unrelated key material.
 
 ## Local evidence
 
-### Unreleased fixVersion2 integration — September 30, 2026
+### 2.2.0 integration — September 30, 2026
 
 All **485 SDK JVM tests in 29 suites** passed with zero failures, errors or skips.
-Release lint reported zero issues. The release AAR and instrumentation APK were
-built; instrumentation was compiled, not executed. The final local validation
-used cached dependencies/offline mode after the initial dependency download.
+Release lint reported zero issues. The versioned 2.2.0 release AAR, sources JAR,
+Maven-local publication/metadata and instrumentation APK were rebuilt with all
+95 tasks executed and the build cache disabled. Instrumentation was compiled,
+not executed. Dependency resolution used cached dependencies/offline mode.
+The AAR embeds SDK version 2.2.0; the actual publication sources archive has no
+duplicate entries, and neither release artifact contains private application or
+debug-only unsafe tracing code. Artifact checks are not live payment acceptance.
 
 The fresh candidate release AAR retains the checked public/protected JVM surface
 of V1 (**50 classes / 475 members**) and V2.1 (**86 classes / 681 members**).

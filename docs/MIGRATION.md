@@ -3,6 +3,38 @@
 This guide separates a **library upgrade** from a **Go protocol migration**.
 Do not replace the factory merely because the dependency version is 2.x.
 
+## Upgrading from 2.1 to 2.2
+
+- Keep the existing V1 factory, app/customer identity, credentials, cache and
+  inventory ledger. The dependency upgrade does not opt a V1 client into Go.
+- Existing `InappifyV2Configuration(apiBaseUrl = ...)` constructors/getters and
+  Kotlin default arguments remain available. The separate SDK/commerce endpoint
+  overload is additive; see [Go configuration](../V2_MIGRATION.md#configuration).
+- An unbound Go client can now start Direct/Bazaar purchases using its Go session
+  Bearer. This requires the backend's commerce contract; do not assume a legacy
+  app API key is a Go key. Direct consumable fulfillment still needs separately
+  configured, scope-matched legacy credentials.
+- An explicitly bound legacy companion keeps its existing purchase/recovery
+  route. Finish pending purchases before changing routes. Rebind after a customer
+  binding change; do not erase SDK storage or the host's inventory ledger to
+  bypass a recovery/rebinding error.
+- Native Go receipt journals bind to their commerce endpoint. Retaining session
+  cache after an endpoint change does not authorize replaying old paid receipts
+  against that new endpoint. Recover using the original endpoint and identity.
+- Go no longer uses V1 `forceVersion`/`hasForceUpdate`; use verified resource
+  results, cache policies and events. Default-client behavior is unchanged.
+- Uncertain Go login/logout retains a durable attempt and hides customer access
+  until the attempt is recovered. Call `recover()` after connectivity returns;
+  do not start a different identity operation to bypass this barrier.
+- Go custom identifiers now accept 1–100 Unicode code points subject to control,
+  edge-whitespace and reserved-prefix restrictions. Keep existing valid IDs;
+  the library upgrade is not a reason to generate new customer identities.
+
+Review [Go commerce limitations](../V2_MIGRATION.md#go-commerce-and-legacy-recovery)
+and run the [upgrade acceptance checklist](#7-upgrade-acceptance-checklist),
+especially the host-owned exactly-once grant and live backend/device scenarios,
+before broad production rollout.
+
 ## Opt-in offline startup in 2.1.0
 
 Existing `configure` and resource method behavior is unchanged. Applications

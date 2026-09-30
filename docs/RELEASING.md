@@ -40,7 +40,15 @@ Use JDK 17, Android SDK 34 and the checked-in Gradle wrapper:
 The default settings include only `:sdk`. A clean checkout must not require
 private configuration, another repository or an integration application.
 
-Inspect both the release AAR and release sources JAR. Confirm:
+Inspect both the release AAR and release sources JAR.
+
+The publication's sources archive is produced by `:sdk:sourceReleaseJar` at
+`sdk/build/intermediates/source_jar/release/release-sources.jar`; verify it against
+the sources variant in generated Gradle module metadata. The auxiliary Kotlin
+`releaseSourcesJar` task is not the publication artifact and must not be uploaded
+in its place.
+
+Confirm:
 
 - SDK package names and release version are correct.
 - No application classes, APKs, credentials or engineering notes are included.

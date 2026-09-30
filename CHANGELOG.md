@@ -3,7 +3,7 @@
 Library versions are independent of the V1, Laravel Store V2 and Go V2 HTTP
 protocols. See the [upgrade guide](docs/MIGRATION.md) before changing factories.
 
-## [Unreleased] - fixVersion2 integration
+## [2.2.0] - 2026-09-30
 
 - Separate Go SDK and commerce endpoints. Unbound Go Direct checkout and Bazaar
   purchase/verification/delivery use the Go session Bearer at commerce V2;
@@ -28,8 +28,10 @@ protocols. See the [upgrade guide](docs/MIGRATION.md) before changing factories.
   set. Uncoordinated main-branch dependency bumps require a separate toolchain
   migration; this integration does not raise the library's minimum Android API.
 
-These are unreleased source changes, not a new published 2.1.0 artifact. Live Go
-commerce/backend and real-device acceptance remain required before release.
+This is a new minor library version; published 2.1.0 artifacts and tags are not
+replaced. Live Go commerce/backend and real-device acceptance have not been
+performed by this release automation and remain required before production rollout.
+See [2.1 → 2.2 migration notes](docs/MIGRATION.md#upgrading-from-21-to-22).
 
 ## [2.1.0] - 2026-09-19
 

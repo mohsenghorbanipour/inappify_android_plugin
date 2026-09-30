@@ -1,6 +1,6 @@
 # Android SDK API and behavior guide
 
-This guide describes current source (2.1.0 plus unreleased fixVersion2 integration), including failure and cache
+This guide describes library 2.2.0, including failure and cache
 semantics. Start with [installation](../README.md#installation), then read
 [migration hints](MIGRATION.md) for an existing app.
 
