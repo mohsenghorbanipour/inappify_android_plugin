@@ -3,6 +3,32 @@
 Library versions are independent of the V1, Laravel Store V2 and Go V2 HTTP
 protocols. See the [upgrade guide](docs/MIGRATION.md) before changing factories.
 
+## [2.3.0] - 2026-10-01
+
+- Add the Kotlin extension `InappifyClient.syncAttributesAndOfferingsIfNeeded()`
+  for both the default V1 client and the opt-in Go V2 client. Await setters first;
+  the operation uploads attributes before requesting fresh offerings under the
+  same identity lock. It does not introduce a GET-attributes endpoint.
+- Limit this operation to five admitted calls per rolling 60 seconds per client.
+  Excess calls log a non-sensitive warning and return current-session offerings
+  cache without HTTP. Missing/invalidated cache returns a retryable failure with
+  `reason=RATE_LIMITED_NO_CACHE` and `retryAfterMillis`.
+- Admitted calls return network/attribute failures, not cached success. V1 sync
+  retains unsent local values on transient failure; Go uses the existing durable
+  write-only queue, batching and rejected-batch quarantine. Successful fetches
+  update the existing cache, snapshots and events.
+- Keep published V1/V2 interface members, factories, getter defaults, standalone
+  attribute methods, storage and purchase behavior unchanged. Custom client
+  implementations without the optional capability return `UNSUPPORTED_OPERATION`.
+  No Flutter/iOS/Web changes are included in this Android release.
+- Verification: 524 JVM tests passed (39 new), release lint has zero issues,
+  AAR/publication sources and instrumentation compile successfully. Bounded
+  public JVM comparisons with published V1, 2.1 and 2.2 found no incompatibilities.
+
+See [2.2 → 2.3 migration](docs/MIGRATION.md#upgrading-from-22-to-23) and the
+[method contract](docs/API_GUIDE.md#sync-attributes-then-fetch-targeted-offerings).
+Live backend targeting and real-device acceptance remain separate rollout gates.
+
 ## [2.2.0] - 2026-09-30
 
 - Separate Go SDK and commerce endpoints. Unbound Go Direct checkout and Bazaar

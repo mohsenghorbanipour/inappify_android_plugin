@@ -3,7 +3,7 @@
 This is a code-derived implementation/acceptance checklist, not a claim that
 every device or backend integration has passed. The original design input was
 the September 2026 Go SDK V2 contract, version 1.1. The matrix includes the 2.2.0
-commerce/session integration; evidence for older releases does not certify
+commerce/session integration and 2.3.0 targeting-sync extension; evidence for older releases does not certify
 the newer changes.
 
 Library 2.x contains two different V2 protocols: Laravel Store V2 payments and
@@ -21,6 +21,7 @@ V1-compatible factory. See the [migration guide](docs/MIGRATION.md).
 | Go trust | Pinned Ed25519, audience/version/scope/subject/time checks. Official factory discovers scope only from a verified response; explicit configuration can constrain it beforehand. |
 | Go identity | Stable anonymous UUID; verified session saved before publication; durable pending login/logout attempts; internal signed subject separate from public user identifier. |
 | Go resources | Four cache policies, shared refreshes, server-selected offerings/placements and write-only durable attributes. Go does not use V1 forceVersion/hasForceUpdate. |
+| 2.3 targeting sync | Additive extension on both clients: attribute upload then fresh offerings under one operation lock; rolling five-call/minute admission and warning/cache-only fallback at the limit. Missing current cache is an explicit retryable failure. Existing protocol-specific identity barriers remain unchanged. |
 | Go commerce | Unbound Direct checkout and Bazaar coordinator use session Bearer at the commerce V2 base; trace listeners cover both transports. |
 | Purchase companion | Explicit, scope-matched legacy credentials retain the legacy purchase/recovery route; Go Bearer tokens are never used as Laravel JSON customer tokens. |
 | Presentation | Native package fallback, compatibility/size/depth gates, app-owned typography and payment URL allowlists. |
@@ -48,6 +49,38 @@ The publisher must review the bundled official signing pin and its rotation
 plan. Runtime key discovery cannot establish trust in unrelated key material.
 
 ## Local evidence
+
+### 2.3.0 targeting sync — October 1, 2026
+
+All **524 SDK JVM tests in 32 suites** passed with zero failures, errors or skips,
+including 39 additional tests. The new coverage includes V1/Go request ordering,
+fresh fetch despite cache, cache-only throttling, exact/rolling clock boundaries,
+concurrent bursts, attribute/offerings failures, cancelled operations, storage
+failures, serialized Login, account/context cache invalidation, protocol-specific
+logout barriers, events/persistence, Go multi-batch/deletion/quarantine behavior
+and old custom-client compatibility. V1 pending-logout guards remain host-owned;
+the extension does not silently change the legacy lifecycle contract.
+
+All **95 release verification tasks** executed with the build cache disabled:
+SDK-only unit tests, release lint (zero issues), release AAR/publication sources,
+Maven-local metadata/publication and instrumentation compilation. Dependencies
+were resolved offline; a task-local mirror definition reused the existing cache,
+without changing public repositories. The freshly downloaded Gradle 8.7 archive
+matched its official SHA-256. Instrumentation was not executed on a device.
+
+The release AAR embeds SDK version 2.3.0. Its checked public/protected JVM surface
+has **88 classes / 692 members**; comparison with published V1 (**50 / 475**),
+V2.1 (**86 / 681**) and V2.2 (**86 / 690**) found no removed descriptors/supertypes,
+narrowed access or incompatible static/final/abstract restrictions. Existing
+public interface source files were not changed. This is bounded classfile
+evidence, not certification of every Kotlin metadata, reflection or runtime use.
+
+Archive inspection found no private application, engineering notes or debug-only
+raw HTTP logger. The publication sources contain no duplicate entries. A bounded
+comparison against four private local configuration values found no matches in
+public sources or artifacts; it is not a comprehensive secret scan. No sample,
+Flutter/iOS/Web change, real-device install, live targeting call, purchase or data
+reset was performed for this release. Backend/device acceptance remains required.
 
 ### 2.2.0 integration — September 30, 2026
 

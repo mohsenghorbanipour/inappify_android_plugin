@@ -3,6 +3,25 @@
 This guide separates a **library upgrade** from a **Go protocol migration**.
 Do not replace the factory merely because the dependency version is 2.x.
 
+## Upgrading from 2.2 to 2.3
+
+- Update the Android dependency to `v2.3.0`. Existing integrations need no factory,
+  credentials, identity, storage or payment-flow changes. Do not clear app data.
+- The new `syncAttributesAndOfferingsIfNeeded()` API is an opt-in Kotlin extension;
+  import `com.inappify.sdk.syncAttributesAndOfferingsIfNeeded`. It is available on
+  both built-in clients without adding an abstract method to the old interface.
+  Custom `InappifyClient` implementations remain valid and return an explicit
+  unsupported result unless they are a built-in implementation.
+- Await attribute setters/Go queue writes before invoking it. Treat admitted-call
+  failures as failures, not fresh targeting data. After five calls per rolling
+  minute, cached success is possible; missing cache gives `RATE_LIMITED_NO_CACHE`
+  in error details. See the [complete contract](API_GUIDE.md#sync-attributes-then-fetch-targeted-offerings).
+- Existing `getOfferings`, `refreshOfferings`, standalone `syncAttributes`, cache
+  policies, Configure and purchase/recovery routes keep their previous semantics.
+  No new HTTP endpoint or protocol migration is required.
+- This release changes only the Android library. It does not automatically add a
+  Flutter MethodChannel or Dart/iOS API; those adapters require a separate update.
+
 ## Upgrading from 2.1 to 2.2
 
 - Keep the existing V1 factory, app/customer identity, credentials, cache and

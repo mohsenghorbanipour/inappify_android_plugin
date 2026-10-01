@@ -397,6 +397,16 @@ class PublicApiTest {
     }
 
     @Test
+    fun targetingSyncExtensionKeepsCustomV1ClientsCompatibleWithoutChangingTheInterface() = runBlocking {
+        val client: InappifyClient = FakeClient()
+        val result = client.syncAttributesAndOfferingsIfNeeded() as InappifyResult.Failure
+        assertEquals(InappifyErrorCode.UNSUPPORTED_OPERATION, result.error.code)
+        assertSame(client.snapshot, result.snapshot)
+        assertEquals(0L, client.snapshot.revision)
+        assertFalse(InappifyClient::class.java.declaredMethods.any { it.name == "syncAttributesAndOfferingsIfNeeded" })
+    }
+
+    @Test
     fun httpDiagnosticsExtension_keepsCustomV1ClientsCompatible() {
         val client: InappifyClient = FakeClient()
         var callbackCount = 0

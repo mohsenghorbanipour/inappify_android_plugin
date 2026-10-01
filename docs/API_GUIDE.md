@@ -1,6 +1,6 @@
 # Android SDK API and behavior guide
 
-This guide describes library 2.2.0, including failure and cache
+This guide describes library 2.3.0, including failure and cache
 semantics. Start with [installation](../README.md#installation), then read
 [migration hints](MIGRATION.md) for an existing app.
 
@@ -223,6 +223,62 @@ Go attributes are write-only:
 - Retryable failures keep queued values. HTTP 422 quarantines the rejected batch
   instead of endlessly retrying it; a corrected value must be queued explicitly.
 - Login/logout must not replay one customer's attributes into another.
+
+### Sync attributes, then fetch targeted offerings
+
+Available in Android **2.3.0** for both `InappifyClient` and `InappifyV2Client`:
+
+```kotlin
+import com.inappify.sdk.syncAttributesAndOfferingsIfNeeded
+
+// Inside a coroutine, after Configure and after awaiting successful setters:
+when (val synced = client.syncAttributesAndOfferingsIfNeeded()) {
+    is InappifyResult.Success -> renderOfferings(synced.data) // host UI function
+    is InappifyResult.Failure -> showError(synced.error)      // host error handling
+}
+```
+
+Use this when targeting rules depend on custom attributes. First await
+`setAttributes(...)`/other setters; Go callers may instead await
+`queueAttributes(...)` and let this operation flush them. Check setter failures
+before presenting a targeted paywall. V1 synchronizes the current full attribute
+list; Go uploads only queued writes (50 entries per batch), including deletions.
+Already acknowledged Go writes are not uploaded again. This is **not** an API
+for downloading Go attributes, which remain write-only.
+
+An admitted call awaits attribute synchronization, then a network offerings
+request even if cache exists. Both steps run under the same client operation
+lock, so Login/Logout cannot switch customers between them. Attribute failure
+stops before fetching; offerings failure is returned rather than converted to
+cached success. Existing valid cache is not unconditionally erased by a network
+failure, but normal context/force-version/auth invalidation still applies.
+Existing identity barriers remain protocol-specific: Go blocks pending Login/
+Logout internally. V1 hosts must keep their pending-logout/account-generation
+guard before using any cache API, including this one (see [offline integration](OFFLINE_CACHE.md)).
+The new V1 operation preserves unsent local values on sync failure; the old
+standalone `syncAttributes` behavior above is unchanged. Success updates normal
+persistent cache, snapshots and events. Go 422 rejection keeps the existing
+quarantine behavior: explicitly queue corrected values before retrying.
+
+The limit is **5 admitted calls in a rolling 60-second window per client**,
+measured with Android's monotonic clock. Failed and cancelled admitted calls
+count; calls rejected before admission (unconfigured/identity barrier) do not.
+At the limit, the SDK logs a warning using the `Inappify` Logcat tag and returns
+only the current session's cached offerings without any HTTP or attribute write.
+If no such cache is available, it returns `UNKNOWN`, `isRetryable=true`, with
+`details["category"] == "RATE_LIMIT"`, `details["reason"] == "RATE_LIMITED_NO_CACHE"`
+and `details["retryAfterMillis"]` (Long). This is not an automatic delayed retry.
+Queued Go attribute changes invalidate previous offerings, so this cache miss
+is expected if new targeting writes arrive after the limit has been reached.
+
+The limiter is in-memory, not reset by Login/Logout, and separate for each client.
+It does not limit other SDK methods or internal protocol retries/batches. Keep a
+long-lived client; do not recreate it or call other methods to bypass throttling.
+At-limit cache success means cached data, not confirmation of a new server sync.
+The extension leaves the existing JVM interface unchanged; custom implementations
+without this optional capability return `UNSUPPORTED_OPERATION`.
+
+### Discount validation
 
 `validateDiscountCode(InappifyDiscountCodeRequest(...))` performs validation.
 Inspect the returned business result; a completed HTTP request does not make a

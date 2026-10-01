@@ -45,6 +45,7 @@ import com.inappify.sdk.InappifyResult
 import com.inappify.sdk.InappifySnapshot
 import com.inappify.sdk.InappifyStorePurchaseStatus
 import com.inappify.sdk.StoreV2CapableClient
+import com.inappify.sdk.TargetingSyncCapableClient
 import com.inappify.sdk.backendKey
 import com.inappify.sdk.findActiveEntitlement
 import com.inappify.sdk.hasValidValue
@@ -160,8 +161,10 @@ internal class DefaultInappifyClient(
             )
         },
     private val legacyPurchaseRouting: Boolean = true,
+    private val targetingSyncLimiter: TargetingSyncRateLimiter = TargetingSyncRateLimiter(),
 ) : InappifyClient,
     CachedSessionCapableClient,
+    TargetingSyncCapableClient,
     StoreV2CapableClient,
     ConsumableFulfillmentCapableClient,
     HttpDiagnosticsCapableClient {
@@ -823,6 +826,51 @@ internal class DefaultInappifyClient(
 
     override suspend fun refreshOfferings(): InappifyResult<InappifyOfferings> =
         loadOfferings(forceRefresh = true)
+
+    override suspend fun syncAttributesAndOfferingsIfNeededInternal(): InappifyResult<InappifyOfferings> =
+        operationMutex.withLock {
+            ensureOpen()
+            val current = state.get()
+            val request = current.resourceRequestOrNull()
+                ?: return@withLock resourcePreconditionFailure(current, TargetingSyncRateLimiter.OPERATION)
+            targetingSyncLimiter.acquire()?.let { retryAfter ->
+                return@withLock TargetingSyncRateLimiter.cachedResult(current.toSnapshot(), retryAfter)
+            }
+            val operationGeneration = generation.get()
+            val result = callService {
+                service.syncAttributes(SyncAttributesApiRequest(
+                    apiKey = request.apiKey,
+                    token = request.token,
+                    attributes = current.customerInfo?.attributes.orEmpty(),
+                    forceVersion = current.forceVersion,
+                ))
+            }
+            val evaluation = evaluate(TargetingSyncRateLimiter.OPERATION, result, mutation = true)
+            if (evaluation is Evaluation.Failure) {
+                // Retain unsynced local values for retry. Definitive auth rejection still
+                // follows the existing restored-session invalidation barrier.
+                return@withLock resourceFailure(invalidateRestoredSession(current, evaluation.error, operationGeneration))
+            }
+            evaluation as Evaluation.Success
+            val attributes = try {
+                evaluation.payload.attributesJson?.let(InappifyDomainJsonCodec::parseAttributes)
+            } catch (_: IllegalArgumentException) {
+                return@withLock malformedOperationFailure(TargetingSyncRateLimiter.OPERATION,
+                    evaluation.requestId, outcomeMayHaveCommitted = true)
+            }
+            val committed = commit(
+                operationGeneration = operationGeneration,
+                operation = TargetingSyncRateLimiter.OPERATION,
+                next = current.withCustomerAttributes(attributes)
+                    .withReceivedForceVersion(evaluation.payload.forceVersion),
+                requestId = evaluation.requestId,
+            )
+            if (committed is InappifyResult.Failure) return@withLock committed
+            currentCoroutineContext().ensureActive()
+            // Do not schedule the legacy forceVersion background refresh as well: this
+            // operation owns the single awaited, post-sync network read under the same lock.
+            loadOfferingsLocked(forceRefresh = true)
+        }
 
     override suspend fun validateDiscountCode(
         request: InappifyDiscountCodeRequest,
@@ -4294,22 +4342,28 @@ internal class DefaultInappifyClient(
     private suspend fun loadOfferings(
         forceRefresh: Boolean,
     ): InappifyResult<InappifyOfferings> = operationMutex.withLock {
+        loadOfferingsLocked(forceRefresh)
+    }
+
+    private suspend fun loadOfferingsLocked(
+        forceRefresh: Boolean,
+    ): InappifyResult<InappifyOfferings> {
         ensureOpen()
         val operationGeneration = generation.get()
         val current = state.get()
         val request = current.resourceRequestOrNull()
-            ?: return@withLock resourcePreconditionFailure(
+            ?: return resourcePreconditionFailure(
                 current = current,
                 operation = OPERATION_GET_OFFERINGS,
             )
 
         val cached = current.offerings
         if (!forceRefresh && cached != null) {
-            return@withLock InappifyResult.Success(cached, current.toSnapshot())
+            return InappifyResult.Success(cached, current.toSnapshot())
         }
 
         val result = callService { service.getOfferings(request) }
-        when (
+        return when (
             val evaluation = evaluate(
                 operation = OPERATION_GET_OFFERINGS,
                 result = result,
@@ -4319,7 +4373,7 @@ internal class DefaultInappifyClient(
             is Evaluation.Failure -> {
                 val rejected = invalidateRestoredSession(current, evaluation.error, operationGeneration)
                 if (rejected.details["cacheInvalidated"] == true) {
-                    return@withLock resourceFailure(rejected)
+                    return resourceFailure(rejected)
                 }
                 markResourceFailure(
                     operationGeneration = operationGeneration,
@@ -4330,7 +4384,7 @@ internal class DefaultInappifyClient(
 
             is Evaluation.Success -> {
                 val raw = evaluation.payload.offeringsJson
-                    ?: return@withLock malformedResourceFailure(
+                    ?: return malformedResourceFailure(
                         operationGeneration = operationGeneration,
                         operation = OPERATION_GET_OFFERINGS,
                         requestId = evaluation.requestId,
@@ -4338,7 +4392,7 @@ internal class DefaultInappifyClient(
                         receivedForceVersion = null,
                     )
                 val offerings = parseOfferings(raw)
-                    ?: return@withLock malformedResourceFailure(
+                    ?: return malformedResourceFailure(
                         operationGeneration = operationGeneration,
                         operation = OPERATION_GET_OFFERINGS,
                         requestId = evaluation.requestId,

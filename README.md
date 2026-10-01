@@ -7,7 +7,10 @@
 Native Android SDK for Inappify purchases, customer information, offerings,
 entitlements, discount codes, and customer attributes.
 
-Version 2.2.0 adds native Go session-Bearer commerce, durable login/logout recovery,
+Version 2.3.0 adds `syncAttributesAndOfferingsIfNeeded()` for ordered attribute
+upload and fresh targeting offerings, with a five-calls-per-minute cache fallback.
+See the [targeting sync contract](docs/API_GUIDE.md#sync-attributes-then-fetch-targeted-offerings).
+Version 2.2.0 added native Go session-Bearer commerce, durable login/logout recovery,
 and compatibility safeguards for existing V1 and explicitly bound legacy clients.
 Review the [2.1 → 2.2 migration notes](docs/MIGRATION.md#upgrading-from-21-to-22)
 before enabling the new Go payment route.
@@ -98,7 +101,7 @@ Add the versioned library module:
 dependencies {
     implementation(
         "com.github.mohsenghorbanipour:" +
-            "inappify_android_plugin:v2.2.0",
+            "inappify_android_plugin:v2.3.0",
     )
 }
 ```

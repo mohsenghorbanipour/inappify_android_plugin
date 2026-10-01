@@ -6,6 +6,7 @@ import com.google.gson.*
 import com.inappify.sdk.*
 import com.inappify.sdk.internal.domain.InappifyDomainJsonCodec
 import com.inappify.sdk.internal.DefaultInappifyClient
+import com.inappify.sdk.internal.TargetingSyncRateLimiter
 import com.inappify.sdk.internal.StoreV2Context
 import com.inappify.sdk.internal.StoreV2Coordinator
 import com.inappify.sdk.internal.StoreV2Outcome
@@ -40,8 +41,9 @@ internal class GoV2Client(
         UnsupportedStoreBillingAdapter(StoreBillingError(StoreBillingErrorCode.UNSUPPORTED_MARKET,
             "Native store billing is unavailable."))
     },
+    private val targetingSyncLimiter: TargetingSyncRateLimiter = TargetingSyncRateLimiter(),
 ) : InappifyV2Client, StoreV2CapableClient, ConsumableFulfillmentCapableClient, HttpDiagnosticsCapableClient,
-    InappifyV2RuntimeCapabilities {
+    InappifyV2RuntimeCapabilities, TargetingSyncCapableClient {
     constructor(config: InappifyV2Configuration, sdkApi: GoApi, storage: SessionStateStore,
         metadata: AppMetadataProvider, now: () -> Long = System::currentTimeMillis,
         eventDispatcher: CoroutineDispatcher = Dispatchers.Main.immediate, backgroundRecovery: Boolean = true,
@@ -49,9 +51,9 @@ internal class GoV2Client(
         billingFactory: StoreBillingAdapterFactory = StoreBillingAdapterFactory { _, _ ->
             UnsupportedStoreBillingAdapter(StoreBillingError(StoreBillingErrorCode.UNSUPPORTED_MARKET,
                 "Native store billing is unavailable."))
-        }) :
+        }, targetingSyncLimiter: TargetingSyncRateLimiter = TargetingSyncRateLimiter()) :
         this(GoV2Environment.explicit(config), sdkApi, storage, metadata, now, eventDispatcher, backgroundRecovery,
-            countryResolver, commerceApi, billingFactory)
+            countryResolver, commerceApi, billingFactory, targetingSyncLimiter)
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val mutex = Mutex()
@@ -541,6 +543,22 @@ internal class GoV2Client(
 
     override suspend fun getOfferings(): InappifyResult<InappifyOfferings> = offerings(InappifyFetchPolicy.CACHE_FIRST)
     override suspend fun refreshOfferings(): InappifyResult<InappifyOfferings> = offerings(InappifyFetchPolicy.NETWORK_ONLY)
+
+    override suspend fun syncAttributesAndOfferingsIfNeededInternal(): InappifyResult<InappifyOfferings> = run {
+        requireSession()
+        val retryAfter = targetingSyncLimiter.acquire()
+        if (retryAfter != null) {
+            when (val cached = TargetingSyncRateLimiter.cachedResult(snapshot, retryAfter)) {
+                is InappifyResult.Success -> cached.data
+                is InappifyResult.Failure -> throw V2Failure(cached.error)
+            }
+        } else {
+            // Do not join a resource flight started before this caller's attribute sync.
+            // One mutex protects admission, queue flushing, fetching and identity binding.
+            fetchOfferingsLocked()
+        }
+    }
+
     override suspend fun offerings(policy: InappifyFetchPolicy): InappifyResult<InappifyOfferings> {
         val cached = snapshot.offerings
         if (cached != null && policy in setOf(InappifyFetchPolicy.CACHE_ONLY, InappifyFetchPolicy.CACHE_FIRST)) {
@@ -548,26 +566,28 @@ internal class GoV2Client(
             return InappifyResult.Success(cached, snapshot)
         }
         if (policy == InappifyFetchPolicy.CACHE_ONLY) return run { fail("CONFIGURATION", "CACHE_MISS") }
-        val result = shared("offerings:${snapshot.appUserIdentifier}") { run {
-            flushAttributesLocked()
-            val response = sessionRequest("offerings", JsonObject().apply {
-                addProperty("appVersion", snapshot.appVersion ?: metadata.get().versionName)
-                addProperty("sdkVersion", BuildConfig.SDK_VERSION)
-                addProperty("country", snapshot.country)
-                // Only the native package renderer is advertised until the element schema is supplied.
-                addProperty("paywallSchemaVersion", 1)
-                addProperty("paywallRendererVersion", 1)
-            })
-            val safe = response.deepCopy().apply {
-                remove("rules"); remove("forceVersion"); remove("hasForceUpdate")
-                if (!has("currentOffering")) add("currentOffering", JsonNull.INSTANCE)
-            }
-            val parsed = InappifyDomainJsonCodec.parseOfferings(safe.toString())
-            commit(document.deepCopy().apply { add("offerings", safe) })
-            parsed
-        } }
+        val result = shared("offerings:${snapshot.appUserIdentifier}") { run { fetchOfferingsLocked() } }
         return if (policy == InappifyFetchPolicy.NETWORK_FIRST && result is InappifyResult.Failure &&
             snapshot.offerings != null) InappifyResult.Success(snapshot.offerings!!, snapshot) else result
+    }
+
+    private suspend fun fetchOfferingsLocked(): InappifyOfferings {
+        flushAttributesLocked()
+        val response = sessionRequest("offerings", JsonObject().apply {
+            addProperty("appVersion", snapshot.appVersion ?: metadata.get().versionName)
+            addProperty("sdkVersion", BuildConfig.SDK_VERSION)
+            addProperty("country", snapshot.country)
+            // Only the native package renderer is advertised until the element schema is supplied.
+            addProperty("paywallSchemaVersion", 1)
+            addProperty("paywallRendererVersion", 1)
+        })
+        val safe = response.deepCopy().apply {
+            remove("rules"); remove("forceVersion"); remove("hasForceUpdate")
+            if (!has("currentOffering")) add("currentOffering", JsonNull.INSTANCE)
+        }
+        val parsed = InappifyDomainJsonCodec.parseOfferings(safe.toString())
+        commit(document.deepCopy().apply { add("offerings", safe) })
+        return parsed
     }
     override suspend fun getCurrentOffering(placementIdentifier: String?, forceRefresh: Boolean,
         context: InappifyOfferingEvaluationContext?): InappifyResult<InappifyOffering?> {
