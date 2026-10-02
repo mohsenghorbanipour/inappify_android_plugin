@@ -11,7 +11,12 @@ import kotlinx.coroutines.*
 import org.junit.Assert.*
 import org.junit.Test
 
-class GoBillingLifecycleTest {
+@org.junit.runner.RunWith(org.junit.runners.Parameterized::class)
+class GoBillingLifecycleTest(private val nativeMarket: InappifyMarket) {
+    companion object {
+        @JvmStatic @org.junit.runners.Parameterized.Parameters(name = "{0}")
+        fun markets(): List<Array<InappifyMarket>> = listOf(arrayOf(InappifyMarket.BAZAAR), arrayOf(InappifyMarket.MYKET))
+    }
     private val fixture = SigningFixture()
     private val sdkTransport = V2Transport()
     private val commerceTransport = V2Transport()
@@ -25,13 +30,15 @@ class GoBillingLifecycleTest {
     private fun client(): GoV2Client {
         sdkTransport.handler = { request -> sdkTransport.response(
             if (request.path == "offerings") jsonObject("""{"status":true,"offerings":[{"identifier":"default","packages":[{"identifier":"package","product":{"identifier":"product"}}]}]}""")
-            else fixture.envelope().apply { addProperty("storePlatform", 10); addProperty("storeInfo", "fixture-public-rsa") }) }
+            else fixture.envelope().apply { addProperty("storePlatform", if (nativeMarket == InappifyMarket.MYKET) 11 else 10); addProperty("storeInfo", "fixture-public-rsa") }) }
         commerceTransport.handler = { error("Closing native billing must not send a receipt/consume report") }
         return GoV2Client(fixture.config, GoApi(sdkTransport, { fixture.now }, {}), storage,
             AppMetadataProvider { AppMetadata("com.example.mobile", "2.4.0", 20400) },
             { fixture.now }, Dispatchers.Unconfined, backgroundRecovery = false,
             commerceApi = GoApi(commerceTransport, { fixture.now }, {}),
-            billingFactory = StoreBillingAdapterFactory { _, _ -> object : StoreBillingAdapter {
+            billingFactory = StoreBillingAdapterFactory { market, _ ->
+                assertEquals(nativeMarket, market)
+                object : StoreBillingAdapter {
                 private var closed = false
                 override suspend fun purchase(uiHost: StoreUiHost, request: StorePurchaseRequest) = this@GoBillingLifecycleTest.purchase.invoke()
                 override suspend fun queryPurchases(productType: StoreProductType) = this@GoBillingLifecycleTest.query.invoke()
@@ -89,7 +96,7 @@ class GoBillingLifecycleTest {
         val fingerprint = MessageDigest.getInstance("SHA-256").digest(fixture.subject.toByteArray())
             .joinToString("") { "%02x".format(it) }
         storage.operations += PendingStoreOperation("fixture-attempt", PendingStoreOperationType.PURCHASE,
-            "bazar", "fixture-session", fingerprint,
+            nativeMarket.storeId, "fixture-session", fingerprint,
             goStoreFingerprint(storage.value!!.apiKeyFingerprint!!, fixture.config.commerceApiBaseUrl),
             "com.example.mobile", 12, "product", "default", PendingStoreProductType.CONSUMABLE,
             PendingStorePurchaseEvidence("fixture-store-token"), PendingStoreOperationPhase.CONSUME_REQUIRED,

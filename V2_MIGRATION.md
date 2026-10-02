@@ -240,7 +240,8 @@ Unbound Go Bazaar reuses the durable native coordinator; the compatibility compa
 uses its original Bazaar/Direct recovery. Only signed Go refresh can update the
 Go client's entitlements afterward. A payment URL or purchase callback cannot grant
 Go access. Failed signed refresh leaves the last verified customer state; recover
-on lifecycle/connectivity to refresh again. Myket remains outside this phase.
+on lifecycle/connectivity to refresh again. Version 2.4.0 adds Myket in-app support
+through the same coordinator. See [Myket setup](docs/MYKET.md).
 
 Direct purchase attribution is additive:
 

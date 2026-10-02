@@ -3,7 +3,7 @@
 This is a code-derived implementation/acceptance checklist, not a claim that
 every device or backend integration has passed. The original design input was
 the September 2026 Go SDK V2 contract, version 1.1. The matrix includes the 2.2.0
-commerce/session integration and 2.3.0 targeting-sync extension; evidence for older releases does not certify
+commerce/session integration, 2.3.0 targeting-sync extension and 2.4.0 Myket support; evidence for older releases does not certify
 the newer changes.
 
 Library 2.x contains two different V2 protocols: Laravel Store V2 payments and
@@ -16,13 +16,13 @@ V1-compatible factory. See the [migration guide](docs/MIGRATION.md).
 | --- | --- |
 | V1 upgrade | Retained API entry points and storage; cached Bazaar identity/recovery binding preserved; untyped request market selection retained. |
 | 2.1 offline bootstrap | Additive cache-only restoration of a matching encrypted legacy session, existing snapshot/events, host-owned background refresh and identity/logout barriers; durable known-auth rejection for opted-in sessions. |
-| Store payments | Direct Android and Bazaar; explicit types, verification checkpoints, polling and recovery. Unsupported stores fail explicitly. |
-| Consumables | Host-owned idempotent inventory transaction; acknowledgement only after durable delivery, then Bazaar consume/report. |
+| Store payments | Direct Android and Bazaar, plus Myket since 2.4.0; explicit types, verification checkpoints, polling and recovery. Unsupported stores fail explicitly. |
+| Consumables | Host-owned idempotent inventory transaction; acknowledgement only after durable delivery, then selected-market consume/report. |
 | Go trust | Pinned Ed25519, audience/version/scope/subject/time checks. Official factory discovers scope only from a verified response; explicit configuration can constrain it beforehand. |
 | Go identity | Stable anonymous UUID; verified session saved before publication; durable pending login/logout attempts; internal signed subject separate from public user identifier. |
 | Go resources | Four cache policies, shared refreshes, server-selected offerings/placements and write-only durable attributes. Go does not use V1 forceVersion/hasForceUpdate. |
 | 2.3 targeting sync | Additive extension on both clients: attribute upload then fresh offerings under one operation lock; rolling five-call/minute admission and warning/cache-only fallback at the limit. Missing current cache is an explicit retryable failure. Existing protocol-specific identity barriers remain unchanged. |
-| Go commerce | Unbound Direct checkout and Bazaar coordinator use session Bearer at the commerce V2 base; trace listeners cover both transports. |
+| Go commerce | Unbound Direct checkout and native-store coordinator use session Bearer at the commerce V2 base; trace listeners cover both transports. |
 | Purchase companion | Explicit, scope-matched legacy credentials retain the legacy purchase/recovery route; Go Bearer tokens are never used as Laravel JSON customer tokens. |
 | Presentation | Native package fallback, compatibility/size/depth gates, app-owned typography and payment URL allowlists. |
 | Diagnostics | Opt-in filtered bounded HTTP exchanges plus storage and signature-stage context; no raw tracing helper in the release variant. |
@@ -33,7 +33,9 @@ V1 and Laravel Store V2 routes are unchanged.
 
 ## Not implemented or not guaranteed
 
-- Myket, Play Store, Apple stores and other enum-only stores.
+- Myket native subscriptions and dynamic-price tokens; Play Store, Apple stores
+  and other enum-only stores. Myket in-app support still needs
+  live device/backend acceptance; see [Myket integration](docs/MYKET.md).
 - An automatic Go-to-Laravel credential exchange: no official bridge endpoint is
   implemented. Legacy Direct fulfillment still needs separately configured credentials;
   fresh unbound commerce instead uses its distinct session-Bearer contract.
@@ -49,6 +51,45 @@ The publisher must review the bundled official signing pin and its rotation
 plan. Runtime key discovery cannot establish trust in unrelated key material.
 
 ## Local evidence
+
+### 2.4.0 Myket integration — October 3, 2026
+
+All **607 JVM tests in 33 suites** passed with zero failures, errors or skips
+(83 additional test executions versus 2.3.0, including parameterized Bazaar/Myket
+coordinator, commerce and lifecycle cases). Coverage includes fresh purchase,
+delivery-before-consume, signed receipt scope, invalid signatures, cross-store
+replay rejection, unsupported subscriptions and cancellation. These JVM tests
+use synthetic billing/server fixtures; they do not run the Myket application.
+
+The SDK AAR, publication sources, Maven-local metadata/publication and
+instrumentation APK compiled with Gradle 8.7/AGP 8.5.1. Release lint has zero
+errors, 14 dependency-update suggestions and one `ExportedReceiver` warning: the official Myket broadcast fallback
+requires a cross-app receiver without a documented sender permission. Replies
+are gated by an unpredictable per-helper nonce; receipts additionally require
+RSA verification and existing backend verification. The receiver is not an
+independent payment authority. No global lint suppression was added.
+
+A separate temporary consumer resolved the locally published Maven artifact
+and its transitive dependencies, without project substitution, Myket dependency,
+manifest placeholders or host manifest overrides. Both Debug (D8 duplicate-class
+check) and minified Release (R8) built successfully with minSdk 21/compileSdk 34.
+Both store adapters and Binder namespaces occur in the R8 mapping; the merged
+manifest includes both permissions and no unresolved placeholders. Neither APK
+was installed or executed.
+
+Public/protected JVM descriptor comparison with the downloaded `v2.3.0` AAR
+(**88 classes / 692 members**) found no removed descriptors or incompatible
+access/supertype/static/final/abstract changes. The candidate has **88 / 694**;
+this is bounded binary evidence, not complete Kotlin metadata or device
+certification. The SDK contains no original `com.android.vending.billing`
+classes; those remain owned by Poolakey. The Myket Binder namespace is isolated.
+Publication sources have no duplicate entries, and archives exclude the private
+sample, local settings, engineering notes and unsafe debug tracing helpers.
+
+The release version is 2.4.0. No device install, payment or backend
+configuration was performed as part of local verification. V1/Go backend acceptance, Myket service/broadcast
+fallback and actual purchase/recovery/consumption on a registered app remain
+rollout gates. See [Myket setup](docs/MYKET.md).
 
 ### 2.3.0 targeting sync — October 1, 2026
 

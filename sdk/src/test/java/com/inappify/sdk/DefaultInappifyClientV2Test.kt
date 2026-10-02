@@ -64,6 +64,90 @@ import org.junit.Test
 class DefaultInappifyClientV2Test {
 
     @Test
+    fun myketCompletesPurchaseThroughV2WithConfiguredKey() = runBlocking {
+        val harness = configuredHarness("MyKet")
+        try {
+            val result = harness.client.purchase(Activity(), purchaseRequest(InappifyMarket.MYKET,
+                InappifyProductType.NON_CONSUMABLE)) as InappifyResult.Success
+            assertEquals(InappifyMarket.MYKET, result.data.market)
+            assertEquals(InappifyStorePurchaseStatus.COMPLETED, result.data.storePurchaseStatus)
+            assertEquals(listOf(InappifyMarket.MYKET), harness.factory.markets)
+            assertEquals(1, harness.service.storePurchaseCalls)
+            assertEquals(0, harness.service.legacyPurchaseCalls)
+        } finally { harness.client.close() }
+    }
+
+    @Test
+    fun myketUntypedConsumableIsDeliveredBeforeConsumptionAndRetryDoesNotRepurchase() = runBlocking {
+        val harness = configuredHarness("MyKet")
+        harness.service.storePurchaseResult = storeResponse(StorePurchaseStatus.DELIVERY_REQUIRED, deliveryId = 901L)
+        try {
+            repeat(2) {
+                val result = harness.client.purchase(Activity(), purchaseRequest(InappifyMarket.MYKET)) as InappifyResult.Success
+                assertEquals(InappifyStorePurchaseStatus.DELIVERY_REQUIRED, result.data.storePurchaseStatus)
+                assertEquals(InappifyMarket.MYKET, result.data.market)
+            }
+            assertEquals(1, harness.billing.purchaseCalls)
+            assertEquals(0, harness.billing.consumeCalls)
+            assertEquals("myket", harness.store.pending.single().store)
+            var source: InappifyDeliverySource? = null
+            harness.client.setConsumableDeliveryHandler { delivery ->
+                source = delivery.source
+                InappifyDeliveryResult.DELIVERED
+            }
+            assertTrue(harness.client.syncPendingConsumables() is InappifyResult.Success)
+            assertEquals(InappifyDeliverySource.MYKET, source)
+            assertEquals(1, harness.billing.consumeCalls)
+            assertTrue(harness.factory.markets.all { it == InappifyMarket.MYKET })
+            assertTrue(harness.store.pending.isEmpty())
+        } finally { harness.client.close() }
+    }
+
+    @Test
+    fun myketRecoveryOnlyQueriesInApp() = runBlocking {
+        val harness = configuredHarness("MyKet")
+        try {
+            assertTrue(harness.client.restorePurchases() is InappifyResult.Success)
+            assertEquals(1, harness.billing.queryCalls)
+            assertEquals(listOf(InappifyMarket.MYKET), harness.factory.markets)
+        } finally { harness.client.close() }
+    }
+
+    @Test
+    fun myketRejectsSubscriptionAndMissingServerRouteBeforeBilling() = runBlocking {
+        for (platform in listOf("MyKet", null)) {
+            val harness = configuredHarness(platform)
+            try {
+                assertTrue(harness.client.purchase(Activity(), purchaseRequest(InappifyMarket.MYKET,
+                    InappifyProductType.SUBSCRIPTION)) is InappifyResult.Failure)
+                assertEquals(0, harness.billing.purchaseCalls)
+                assertEquals(0, harness.service.storePurchaseCalls)
+                assertEquals(0, harness.service.legacyPurchaseCalls)
+            } finally { harness.client.close() }
+        }
+    }
+
+    @Test
+    fun changingToBazaarCannotReplayOrConsumeMyketReceipt() = runBlocking {
+        val first = configuredHarness("MyKet")
+        first.service.storePurchaseResult = storeResponse(StorePurchaseStatus.DELIVERY_REQUIRED, deliveryId = 901L)
+        assertTrue(first.client.purchase(Activity(), purchaseRequest(InappifyMarket.MYKET)) is InappifyResult.Success)
+        first.client.close()
+        val other = Harness("Bazar", first.store)
+        try {
+            assertTrue(other.client.configure(InappifyOptions("api-key", "customer-1", InappifyMarket.BAZAAR,
+                "bazaar-fixture-key")) is InappifyResult.Success)
+            other.resetObservations()
+            assertTrue(other.client.confirmDelivery(901L) is InappifyResult.Failure)
+            assertTrue(other.client.purchase(Activity(), purchaseRequest(InappifyMarket.BAZAAR)) is InappifyResult.Failure)
+            assertEquals(0, other.billing.purchaseCalls)
+            assertEquals(0, other.billing.consumeCalls)
+            assertEquals(0, other.service.storePurchaseCalls)
+            assertEquals("myket", other.store.pending.single().store)
+        } finally { other.client.close() }
+    }
+
+    @Test
     fun missingStorePlatform_commitsDirectConfigurationAndAuthentication() = runBlocking {
         val harness = Harness(storePlatform = null)
         try {
@@ -1629,7 +1713,7 @@ class DefaultInappifyClientV2Test {
     }
 
     @Test
-    fun myKetPlatform_isRejectedBeforeBillingOrNetworkPurchase() = runBlocking {
+    fun myKetPlatform_rejectsExplicitBazaarRequestBeforeBillingOrNetworkPurchase() = runBlocking {
         val harness = configuredHarness(storePlatform = "MyKet")
         try {
             val result = harness.client.purchase(
@@ -1648,7 +1732,7 @@ class DefaultInappifyClientV2Test {
     }
 
     @Test
-    fun unsupportedServerStore_isRejectedBeforeSyncOrRestoreFallback() = runBlocking {
+    fun myketServerWithBazaarKey_isRejectedBeforeSyncOrRestoreFallback() = runBlocking {
         val harness = Harness(storePlatform = "MyKet")
         try {
             val configured = harness.client.configure(
@@ -2099,17 +2183,20 @@ class DefaultInappifyClientV2Test {
         private val adapter: StoreBillingAdapter,
     ) : StoreBillingAdapterFactory {
         var createCalls: Int = 0
+        val markets = mutableListOf<InappifyMarket>()
 
         override fun create(
             market: InappifyMarket,
             marketKey: String?,
         ): StoreBillingAdapter {
             createCalls += 1
+            markets += market
             return adapter
         }
 
         fun resetObservations() {
             createCalls = 0
+            markets.clear()
         }
     }
 

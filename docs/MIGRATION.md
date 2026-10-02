@@ -3,6 +3,20 @@
 This guide separates a **library upgrade** from a **Go protocol migration**.
 Do not replace the factory merely because the dependency version is 2.x.
 
+## Upgrading from 2.3 to 2.4
+
+- Update the dependency to `v2.4.0`. Existing Bazaar and Direct clients retain
+  their factories, request APIs and payment routes.
+- To enable Myket, select `InappifyMarket.MYKET`, supply the app's Myket RSA
+  public key and configure the backend app/session for `MyKet`/`11`.
+- The SDK bundles the isolated Myket integration and fixed manifest settings;
+  do not add a separate Myket billing dependency or manifest placeholders.
+- Myket supports consumables and non-consumables. Native subscriptions and
+  dynamic-price tokens are rejected. Existing fulfillment/recovery APIs apply.
+- Run the [Myket device/backend rollout checks](MYKET.md#validation-and-rollout)
+  before enabling it for production customers. Local tests do not certify an
+  actual payment or backend integration.
+
 ## Upgrading from 2.2 to 2.3
 
 - Update the Android dependency to `v2.3.0`. Existing integrations need no factory,
@@ -115,8 +129,7 @@ Do not erase the user's data or start a replacement purchase as a workaround.
 | Recognized unsupported server store | Fails explicitly; never silently switches store. |
 
 Unknown numeric platform values follow the legacy fallback; enum recognition
-does not imply store implementation. Only Direct Android and Bazaar payments
-are implemented.
+does not imply store implementation. The published 2.3.0 release supports only Direct Android and Bazaar payments.
 
 An unchanged Direct request remains valid:
 
@@ -252,3 +265,7 @@ Before broad rollout, test an actual V1-installed app without clearing data:
 Local ABI/unit evidence and pending device gates are recorded in
 [the acceptance matrix](../V2_CONTRACT.md). No migration guide can substitute
 for testing the host application's own inventory and identity integration.
+
+Version 2.4.0 adds [Myket in-app integration](MYKET.md) with an explicit
+server route and matching RSA key; it does not change the upgrade instructions
+for already published versions.

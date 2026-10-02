@@ -7,7 +7,11 @@
 Native Android SDK for Inappify purchases, customer information, offerings,
 entitlements, discount codes, and customer attributes.
 
-Version 2.3.0 adds `syncAttributesAndOfferingsIfNeeded()` for ordered attribute
+Version **2.4.0** adds Myket in-app purchases alongside Bazaar.
+See [Myket setup and limits](docs/MYKET.md) and
+[2.3 → 2.4 migration](docs/MIGRATION.md#upgrading-from-23-to-24).
+
+Version 2.3.0 added `syncAttributesAndOfferingsIfNeeded()` for ordered attribute
 upload and fresh targeting offerings, with a five-calls-per-minute cache fallback.
 See the [targeting sync contract](docs/API_GUIDE.md#sync-attributes-then-fetch-targeted-offerings).
 Version 2.2.0 added native Go session-Bearer commerce, durable login/logout recovery,
@@ -58,7 +62,9 @@ Bazaar workflow:
 - `DirectAndroid` or `NONE` continues to use `POST /app/v1/purchase`.
 - `Bazar` uses Poolakey and `POST /app/v2/store/purchases`, including durable
   verification, restore, subscription renewal, and consumable delivery.
-- MyKet is intentionally unsupported in this release.
+- `MyKet` uses the same Store V2 coordinator with an isolated Myket
+  client for consumable and non-consumable products. It requires an explicit
+  server Myket route; subscriptions are unsupported.
 
 ## Requirements
 
@@ -66,7 +72,8 @@ Bazaar workflow:
 - AndroidX
 - Kotlin coroutines
 - A registered Inappify Android application
-- Cafe Bazaar and its RSA public key for Bazaar purchases
+- The selected marketplace app and its application-specific RSA public key
+  (Cafe Bazaar or Myket)
 
 The project itself builds with JDK 17, Gradle 8.7, Android Gradle Plugin 8.5.1,
 and Android SDK 34. The published library emits Java 8-compatible bytecode.
@@ -101,7 +108,7 @@ Add the versioned library module:
 dependencies {
     implementation(
         "com.github.mohsenghorbanipour:" +
-            "inappify_android_plugin:v2.3.0",
+            "inappify_android_plugin:v2.4.0",
     )
 }
 ```
@@ -162,7 +169,7 @@ directly and numeric values use the following backend enum mapping:
 | 5 | `PlayStore` | Unsupported |
 | 6 | `AppStore` | Unsupported |
 | 10 | `Bazar` | Supported through Bazaar V2 |
-| 11 | `MyKet` | Deferred to the next implementation phase |
+| 11 | `MyKet` | Consumable/non-consumable support since 2.4.0 |
 | 12 | `SibApp` | Unsupported |
 
 On the default client, an unchanged V1 request (without `productType`) retains
@@ -177,6 +184,11 @@ requires the key. Explicit consumables are supported by
 `DirectAndroid` and Bazaar V2. A consumable is rejected before checkout only
 when it would otherwise enter the legacy Bazaar V1 route, where fulfillment
 cannot be completed safely.
+
+For Myket, set `market=MYKET` and its RSA public key. The backend must select
+`MyKet`/`11`; a missing or conflicting route fails before Billing. The SDK bundles
+fixed Myket manifest entries and its isolated billing client. No host manifest
+placeholders or separate Myket dependency are required. See [the complete guide](docs/MYKET.md).
 
 ## Customer information and offerings
 

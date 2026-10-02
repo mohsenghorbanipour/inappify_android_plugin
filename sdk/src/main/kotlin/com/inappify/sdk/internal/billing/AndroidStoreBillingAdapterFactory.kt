@@ -29,6 +29,15 @@ internal class AndroidStoreBillingAdapterFactory(
             }
         }
 
+        InappifyMarket.MYKET -> if (marketKey.isNullOrBlank()) {
+            UnsupportedStoreBillingAdapter(StoreBillingError(
+                StoreBillingErrorCode.MISSING_MARKET_KEY,
+                "Myket billing requires a public RSA key.",
+            ))
+        } else {
+            MyketStoreBillingAdapter(applicationContext, marketKey)
+        }
+
         InappifyMarket.NONE -> UnsupportedStoreBillingAdapter(
             StoreBillingError(
                 code = StoreBillingErrorCode.UNSUPPORTED_MARKET,

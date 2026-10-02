@@ -6,7 +6,7 @@ import com.inappify.sdk.internal.billing.StoreBillingError
 import com.inappify.sdk.internal.billing.StoreBillingErrorCode
 
 /** A lost native callback is an uncertain payment, not permission to start another purchase. */
-internal fun StoreBillingError.toGoPurchaseError(attemptId: String): InappifyError {
+internal fun StoreBillingError.toGoPurchaseError(attemptId: String, store: String = "bazar"): InappifyError {
     val uncertain = code in setOf(StoreBillingErrorCode.PURCHASE_FAILED,
         StoreBillingErrorCode.CONNECTION_LOST, StoreBillingErrorCode.OPERATION_TIMEOUT,
         StoreBillingErrorCode.UI_HOST_DESTROYED, StoreBillingErrorCode.ADAPTER_CLOSED,
@@ -24,6 +24,6 @@ internal fun StoreBillingError.toGoPurchaseError(attemptId: String): InappifyErr
     }
     return InappifyError(publicCode, "The marketplace purchase did not complete reliably.",
         isRetryable = isRetryable && !uncertain,
-        details = mapOf("operation" to "purchase", "attemptId" to attemptId, "store" to "bazar",
+        details = mapOf("operation" to "purchase", "attemptId" to attemptId, "store" to store,
             "storeCode" to code.name, "outcomeMayHaveCommitted" to uncertain))
 }

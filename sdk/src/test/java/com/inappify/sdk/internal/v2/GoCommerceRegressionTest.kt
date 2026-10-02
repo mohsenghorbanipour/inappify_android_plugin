@@ -11,16 +11,25 @@ import java.security.MessageDigest
 import kotlinx.coroutines.*
 import org.junit.Assert.*
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.junit.runners.Parameterized
 
-class GoCommerceRegressionTest {
+@RunWith(Parameterized::class)
+class GoCommerceRegressionTest(private val nativeMarket: InappifyMarket) {
+    companion object {
+        @JvmStatic @Parameterized.Parameters(name = "{0}")
+        fun markets(): List<Array<InappifyMarket>> = listOf(arrayOf(InappifyMarket.BAZAAR), arrayOf(InappifyMarket.MYKET))
+    }
+
     private val signing = SigningFixture()
     private val storage = CommerceStore()
     private val sdkTransport = DiagnosticTransport()
     private val commerceTransport = DiagnosticTransport()
     private val owned = mutableMapOf<StoreProductType, List<StorePurchase>>()
+    private var freshPurchase: ((StorePurchaseRequest) -> StoreBillingResult)? = null
     private var billingCalls = 0
     private var billingKey: String? = null
-    private var platform = 10
+    private var platform = if (nativeMarket == InappifyMarket.MYKET) 11 else 10
     private val metadata = AppMetadataProvider { AppMetadata("com.example.mobile", "2.4.0", 20400) }
     private fun client(configuration: InappifyV2Configuration = signing.config): GoV2Client {
         sdkTransport.handler = { request -> when (request.path) {
@@ -39,18 +48,40 @@ class GoCommerceRegressionTest {
         return GoV2Client(configuration, GoApi(sdkTransport, { signing.now }, {}), storage, metadata,
             { signing.now }, Dispatchers.Unconfined, backgroundRecovery = false,
             commerceApi = GoApi(commerceTransport, { signing.now }, {}),
-            billingFactory = StoreBillingAdapterFactory { _, key ->
+            billingFactory = StoreBillingAdapterFactory { market, key ->
+                assertEquals(nativeMarket, market)
                 billingCalls++
                 billingKey = key
                 object : StoreBillingAdapter {
                     override suspend fun purchase(uiHost: StoreUiHost, request: StorePurchaseRequest): StoreBillingResult =
-                        error("A recovery test must never start Billing UI")
+                        freshPurchase?.invoke(request) ?: error("A recovery test must never start Billing UI")
                     override suspend fun queryPurchases(productType: StoreProductType): StorePurchaseQueryResult =
-                        StorePurchaseQueryResult.Success(owned[productType].orEmpty())
+                        StorePurchaseQueryResult.Success(owned[productType].orEmpty()).also {
+                            if (nativeMarket == InappifyMarket.MYKET) assertEquals(StoreProductType.IN_APP, productType)
+                        }
                     override fun close() = Unit
                 }
             })
     }
+    @org.junit.Test fun freshNativePurchaseUsesSelectedAdapterAndCommerceSession() = runBlocking {
+        freshPurchase = { request ->
+            assertEquals(StoreProductType.IN_APP, request.productType)
+            StoreBillingResult.Success(StorePurchase("fixture-order", "fixture-token", request.developerPayload!!,
+                "com.example.mobile", "product", signing.now, "fixture-json", "fixture-signature"))
+        }
+        client().use { sdk ->
+            configured(sdk)
+            val result = sdk.purchase(android.app.Activity(), InappifyPurchaseRequest("product", "original",
+                market = nativeMarket, productType = InappifyProductType.NON_CONSUMABLE,
+                idempotencyKey = "fresh-attempt"))
+            assertTrue(result.toString(), result is InappifyResult.Success)
+            assertEquals(nativeMarket, (result as InappifyResult.Success).data.market)
+            assertEquals(1, billingCalls)
+            assertEquals("store/purchases", commerceTransport.requests.single().path)
+            assertTrue(storage.operations.isEmpty()) // Terminal non-consumables leave no pending checkpoint.
+        }
+    }
+
     private suspend fun configured(sdk: GoV2Client) {
         assertTrue(sdk.configure(InappifyOptions("public-fixture-key", signing.subject)) is InappifyResult.Success)
         assertTrue(sdk.refreshOfferings() is InappifyResult.Success)
@@ -59,7 +90,7 @@ class GoCommerceRegressionTest {
         .digest(value.toByteArray()).joinToString("") { "%02x".format(it) }
     private fun pending(type: PendingStoreProductType = PendingStoreProductType.CONSUMABLE,
         phase: PendingStoreOperationPhase = PendingStoreOperationPhase.DELIVERY_REQUIRED): PendingStoreOperation =
-        PendingStoreOperation("attempt-1", PendingStoreOperationType.PURCHASE, "bazar", "old-session-token",
+        PendingStoreOperation("attempt-1", PendingStoreOperationType.PURCHASE, nativeMarket.storeId, "old-session-token",
             digest(signing.subject), storeFingerprint(), "com.example.mobile", 12,
             "product", "original", type, PendingStorePurchaseEvidence("fixture-store-token"),
             phase, deliveryId = if (phase == PendingStoreOperationPhase.DELIVERY_REQUIRED) 7 else null,
@@ -76,6 +107,31 @@ class GoCommerceRegressionTest {
             "product", signing.now, "fixture-original", "fixture-signature")
     }
     private fun storeFingerprint() = goStoreFingerprint(storage.value!!.apiKeyFingerprint!!, signing.config.commerceApiBaseUrl)
+    @Test fun cannotReplayReceiptFromTheOtherStore() = runBlocking {
+        client().use { sdk ->
+            configured(sdk)
+            storage.upsertPendingStoreOperation(pending().copy(store = if (nativeMarket == InappifyMarket.MYKET) "bazar" else "myket"))
+            val retry = sdk.purchase(InappifyPurchaseRequest("product", "original", idempotencyKey = "attempt-1",
+                productType = InappifyProductType.CONSUMABLE)) as InappifyResult.Failure
+            assertEquals("PURCHASE_ATTEMPT_CONFLICT", retry.error.details["serverCode"])
+            assertTrue(sdk.confirmDelivery(7) is InappifyResult.Failure)
+            assertTrue((sdk.syncPurchases() as InappifyResult.Success).data.isEmpty())
+            assertTrue(commerceTransport.requests.isEmpty())
+            assertEquals(1, storage.operations.size)
+        }
+    }
+    @Test fun myketRejectsSubscriptionBeforeBillingOrCommerce() = runBlocking {
+        if (nativeMarket != InappifyMarket.MYKET) return@runBlocking
+        client().use { sdk ->
+            configured(sdk)
+            val result = sdk.purchase(InappifyPurchaseRequest("product", "original",
+                productType = InappifyProductType.SUBSCRIPTION)) as InappifyResult.Failure
+            assertEquals("MYKET_SUBSCRIPTIONS_UNSUPPORTED", result.error.details["serverCode"])
+            assertEquals(0, billingCalls)
+            assertTrue(commerceTransport.requests.isEmpty())
+        }
+    }
+
     @Test fun changingCommerceEndpointKeepsSessionCacheButCannotReplayPaidEvidence() = runBlocking {
         client().use { sdk ->
             configured(sdk)
@@ -107,7 +163,7 @@ class GoCommerceRegressionTest {
             configured(sdk)
             storage.upsertPendingStoreOperation(pending())
             val result = sdk.purchase(InappifyPurchaseRequest("product", "original",
-                productType = InappifyProductType.CONSUMABLE, market = InappifyMarket.BAZAAR,
+                productType = InappifyProductType.CONSUMABLE, market = nativeMarket,
                 idempotencyKey = "attempt-1"))
             assertTrue(result is InappifyResult.Success)
             assertEquals(InappifyStorePurchaseStatus.DELIVERY_REQUIRED,
@@ -335,13 +391,13 @@ class GoCommerceRegressionTest {
             }
         }
     }
-    @Test fun explicitlyBoundBazaarPreservesLegacyPaidAttemptAndDeliveryRoute() = runBlocking {
+    @Test fun explicitlyBoundStorePreservesLegacyPaidAttemptAndDeliveryRoute() = runBlocking {
         var confirmedWithToken: String? = null
         val legacyStorage = CommerceStore()
         val base = LegacyPurchaseFixtureService()
         fun response() = ServiceResult.Response(200, BackendResponse(true, null, null, "legacy-token-A",
             signing.subject, """{"originalAppUserId":"${signing.subject}"}""", "fixture-public-rsa", 12, 4,
-            offeringsJson = base.offerings, storePlatform = "Bazar"), null)
+            offeringsJson = base.offerings, storePlatform = if (nativeMarket == InappifyMarket.MYKET) "MyKet" else "Bazar"), null)
         val service = object : InappifyService by base {
             override suspend fun configure(request: ConfigureApiRequest): ServiceResult = response()
             override suspend fun getCustomerInfo(request: ResourceApiRequest): ServiceResult = response()
@@ -353,7 +409,7 @@ class GoCommerceRegressionTest {
         }
         DefaultInappifyClient(service, legacyStorage, metadata, "2.1.0").use { legacy ->
             assertTrue(legacy.configure(InappifyOptions("legacy-fixture-key", signing.subject,
-                market = InappifyMarket.BAZAAR, marketKey = "fixture-public-rsa")) is InappifyResult.Success)
+                market = nativeMarket, marketKey = "fixture-public-rsa")) is InappifyResult.Success)
             client().use { sdk ->
                 configured(sdk)
                 legacyStorage.upsertPendingStoreOperation(pending().copy(

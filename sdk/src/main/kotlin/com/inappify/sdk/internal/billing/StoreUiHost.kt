@@ -19,6 +19,11 @@ internal class StoreUiHost private constructor(
 ) {
     private val activityReference: WeakReference<Activity> = WeakReference(activity)
 
+    /** Used only while launching Myket's proxy Activity; adapters must not retain it. */
+    fun activityOrNull(): Activity? = activityReference.get()?.takeUnless {
+        it.isDestroyed || it.isFinishing
+    }
+
     /** Resolves and validates the registry and lifecycle required by native billing flows. */
     fun resolveActivityResultRegistry(): StoreUiHostResolution {
         val activity = activityReference.get()

@@ -11,6 +11,7 @@ import com.inappify.sdk.internal.billing.StoreBillingError
 import com.inappify.sdk.internal.billing.StoreBillingErrorCode
 import com.inappify.sdk.internal.billing.StoreConsumeResult
 import com.inappify.sdk.internal.billing.StorePurchase
+import com.inappify.sdk.internal.billing.storeId
 import com.inappify.sdk.internal.network.InappifyService
 import com.inappify.sdk.internal.network.ServiceFailureKind
 import com.inappify.sdk.internal.network.StoreConsumeResult as NetworkConsumeResult
@@ -48,7 +49,10 @@ internal class StoreV2Context(
     internal val appVersion: String,
     internal val forceVersion: Long?,
     internal val marketKey: String?,
-)
+    internal val market: InappifyMarket = InappifyMarket.BAZAAR,
+) {
+    internal val store: String get() = market.storeId
+}
 
 /** Result of advancing one server-authoritative store operation. */
 internal sealed interface StoreV2Outcome {
@@ -93,7 +97,7 @@ internal sealed interface StoreV2Outcome {
 }
 
 /**
- * Durable Bazaar V2 state machine.
+ * Durable marketplace V2 state machine.
  *
  * Store callbacks only provide evidence. This coordinator is the sole place
  * that can turn that evidence into a terminal server-authoritative result.
@@ -124,6 +128,9 @@ internal class StoreV2Coordinator(
         context: StoreV2Context,
         maxPolls: Int = MAX_FOREGROUND_POLLS,
     ): StoreV2Outcome {
+        operation.bindingError(context)?.let {
+            return StoreV2Outcome.Failure(operation, null, it, retainedForRetry = true)
+        }
         if (!stateStore.upsertPendingStoreOperation(operation)) {
             return storageFailure(operation)
         }
@@ -525,7 +532,7 @@ internal class StoreV2Coordinator(
                                         isRetryable = true,
                                         details = mapOf(
                                             "operation" to OPERATION_CONSUME,
-                                            "store" to STORE_BAZAAR,
+                                            "store" to operation.store,
                                         ),
                                     ),
                                 )
@@ -818,7 +825,7 @@ internal class StoreV2Coordinator(
         context: StoreV2Context,
     ): StoreConsumeResult {
         val adapter = try {
-            billingAdapterFactory.create(InappifyMarket.BAZAAR, context.marketKey)
+            billingAdapterFactory.create(context.market, context.marketKey)
         } catch (_: Exception) {
             return StoreConsumeResult.RetryableFailure(
                 StoreBillingError(
@@ -1060,7 +1067,7 @@ internal class StoreV2Coordinator(
             message = "The Inappify server rejected the store purchase.",
             details = buildMap {
                 put("operation", OPERATION_STORE_VERIFICATION)
-                put("store", STORE_BAZAAR)
+                put("store", operation.store)
                 state.errorCode.safeBackendDiagnostic(
                     operation = operation,
                     context = context,
@@ -1113,7 +1120,7 @@ internal class StoreV2Coordinator(
     private fun PendingStoreOperation.bindingError(
         context: StoreV2Context,
     ): InappifyError? {
-        val matches = apiKeyFingerprint == context.apiKeyFingerprint &&
+        val matches = store == context.store && apiKeyFingerprint == context.apiKeyFingerprint &&
             customerIdentifierFingerprint == context.customerIdentifierFingerprint &&
             appIdentifier == context.appIdentifier &&
             (appId == null || appId == context.appId)
@@ -1155,7 +1162,7 @@ internal class StoreV2Coordinator(
 
     private fun PendingStoreOperation.safeDetails(): Map<String, Any?> = mapOf(
         "operation" to OPERATION_STORE_VERIFICATION,
-        "store" to STORE_BAZAAR,
+        "store" to store,
         "phase" to phase.name,
         "attemptId" to id.take(MAX_DIAGNOSTIC_LENGTH),
         "outcomeMayHaveCommitted" to true,
@@ -1165,7 +1172,7 @@ internal class StoreV2Coordinator(
         context: StoreV2Context,
     ): Map<String, Any?> = buildMap {
         put("operation", OPERATION_STORE_VERIFICATION)
-        put("store", STORE_BAZAAR)
+        put("store", store)
         put("phase", phase.name)
         id.sanitizeBackendText(
             operation = this@safeDetails,
@@ -1437,7 +1444,6 @@ internal class StoreV2Coordinator(
         private const val MAX_JSON_SECRET_INPUT_LENGTH = 8_192
         private const val MAX_JSON_SECRET_NODE_COUNT = 128
         private const val REDACTED_VALUE = "<redacted>"
-        private const val STORE_BAZAAR = "bazar"
         private const val STORE_TEMPORARILY_UNAVAILABLE =
             "STORE_TEMPORARILY_UNAVAILABLE"
         private const val STORE_CONSUME_FAILED = "STORE_CONSUME_FAILED"

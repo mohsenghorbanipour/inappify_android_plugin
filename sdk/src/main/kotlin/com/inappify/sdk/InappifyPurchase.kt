@@ -166,11 +166,25 @@ public class InappifyPurchase private constructor(
             deliveryId: Long?,
             verificationRequestId: Long?,
             alreadyProcessed: Boolean,
+        ): InappifyPurchase = storeResult(attemptId, productIdentifier, offeringIdentifier,
+            packageIdentifier, status, deliveryId, verificationRequestId, alreadyProcessed, InappifyMarket.BAZAAR)
+
+        @Suppress("LongParameterList")
+        internal fun storeResult(
+            attemptId: String,
+            productIdentifier: String,
+            offeringIdentifier: String,
+            packageIdentifier: String?,
+            status: InappifyStorePurchaseStatus,
+            deliveryId: Long?,
+            verificationRequestId: Long?,
+            alreadyProcessed: Boolean,
+            market: InappifyMarket,
         ): InappifyPurchase = InappifyPurchase(
             attemptId = attemptId,
             productIdentifier = productIdentifier,
             offeringIdentifier = offeringIdentifier,
-            market = InappifyMarket.BAZAAR,
+            market = market,
             purchaseStatus = when (status) {
                 InappifyStorePurchaseStatus.COMPLETED,
                 InappifyStorePurchaseStatus.RESTORED,

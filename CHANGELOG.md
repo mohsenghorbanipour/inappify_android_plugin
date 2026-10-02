@@ -3,6 +3,26 @@
 Library versions are independent of the V1, Laravel Store V2 and Go V2 HTTP
 protocols. See the [upgrade guide](docs/MIGRATION.md) before changing factories.
 
+## [2.4.0] - 2026-10-03
+
+- Add `InappifyMarket.MYKET` for consumable and non-consumable purchases on the
+  default V1 client and opt-in Go commerce client, including signed receipt
+  validation, durable recovery, delivery-before-consume and store-bound retries.
+- Bundle an isolated adaptation of Myket Billing Client 1.6. Its Binder Java
+  package and UI resources avoid collisions with the existing Poolakey dependency;
+  fixed manifest settings require no host placeholders or separate Myket artifact.
+- Preserve existing factories, Direct/Bazaar routes and API descriptors. Myket
+  requires the backend `MyKet`/`11` route and the matching RSA public key. Reject
+  native subscriptions, dynamic-price tokens and conflicting store bindings.
+- See [setup and rollout checks](docs/MYKET.md) and
+  [third-party source provenance](THIRD_PARTY_NOTICES.md). Device/backend
+  acceptance remains pending.
+- Verification: 607 JVM tests passed; SDK release lint has zero errors and one
+  documented exported-receiver warning (plus 14 dependency-update suggestions
+  in the clean release build). Independent consumer Debug and R8
+  Release builds succeeded. Bounded JVM comparison with 2.3.0 found no removed
+  public/protected descriptors or incompatible access/supertype restrictions.
+
 ## [2.3.0] - 2026-10-01
 
 - Add the Kotlin extension `InappifyClient.syncAttributesAndOfferingsIfNeeded()`

@@ -46,8 +46,25 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.junit.runners.Parameterized
+import com.inappify.sdk.internal.billing.storeId
 
-class StoreV2CoordinatorTest {
+@RunWith(Parameterized::class)
+class StoreV2CoordinatorTest(private val market: InappifyMarket) {
+
+    @Test
+    fun wrongStoreCannotSubmitResumeOrConsume() = runBlocking {
+        val fixture = fixture()
+        val wrong = operation().copy(store = if (market == InappifyMarket.MYKET) "bazar" else "myket")
+        assertTrue(fixture.coordinator.submit(wrong, context()) is StoreV2Outcome.Failure)
+        assertEquals(0, fixture.stateStore.operationCount)
+        fixture.stateStore.seed(wrong)
+        assertTrue(fixture.coordinator.resume(wrong, context()) is StoreV2Outcome.Failure)
+        assertTrue(fixture.coordinator.confirmDelivery(wrong, context()) is StoreV2Outcome.Failure)
+        assertTrue(fixture.events.isEmpty())
+        assertEquals(1, fixture.stateStore.operationCount)
+    }
 
     @Test
     fun httpBackpressurePersistsRetryAfterWithoutDiscardingReceipt() = runBlocking {
@@ -889,7 +906,7 @@ class StoreV2CoordinatorTest {
         val service = FakeService(events)
         val stateStore = FakeStateStore()
         val billing = FakeBillingAdapter(events)
-        val billingFactory = FakeBillingFactory(billing)
+        val billingFactory = FakeBillingFactory(billing, market)
         val coordinator = StoreV2Coordinator(
             service = service,
             stateStore = stateStore,
@@ -920,7 +937,7 @@ class StoreV2CoordinatorTest {
     ): PendingStoreOperation = PendingStoreOperation(
         id = "test-operation",
         operation = PendingStoreOperationType.PURCHASE,
-        store = "bazar",
+        store = market.storeId,
         customerToken = "test-customer-token",
         customerIdentifierFingerprint = CUSTOMER_BINDING,
         apiKeyFingerprint = API_BINDING,
@@ -962,6 +979,7 @@ class StoreV2CoordinatorTest {
         appVersion = "1.0.0",
         forceVersion = null,
         marketKey = marketKey,
+        market = market,
     )
 
     private fun knownSecrets(
@@ -1194,6 +1212,7 @@ class StoreV2CoordinatorTest {
 
     private class FakeBillingFactory(
         private val adapter: StoreBillingAdapter,
+        private val expectedMarket: InappifyMarket,
     ) : StoreBillingAdapterFactory {
         var createCalls: Int = 0
             private set
@@ -1202,6 +1221,7 @@ class StoreV2CoordinatorTest {
             market: InappifyMarket,
             marketKey: String?,
         ): StoreBillingAdapter {
+            assertEquals(expectedMarket, market)
             createCalls += 1
             return adapter
         }
@@ -1240,7 +1260,10 @@ class StoreV2CoordinatorTest {
         }
     }
 
-    private companion object {
+    companion object {
+        @JvmStatic @Parameterized.Parameters(name = "{0}")
+        fun markets(): List<Array<InappifyMarket>> = listOf(arrayOf(InappifyMarket.BAZAAR), arrayOf(InappifyMarket.MYKET))
+
         const val INITIAL_TIME = 1_000_000L
         const val VERIFICATION_ID = 41L
         const val DELIVERY_ID = 73L

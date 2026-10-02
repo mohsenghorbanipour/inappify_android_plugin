@@ -1,6 +1,6 @@
 # Android SDK API and behavior guide
 
-This guide describes library 2.3.0, including failure and cache
+This guide describes library 2.4.0, including failure and cache
 semantics. Start with [installation](../README.md#installation), then read
 [migration hints](MIGRATION.md) for an existing app.
 
@@ -324,7 +324,7 @@ For consumables:
    grant the mapped product together. The SDK cannot infer quantity from the SKU.
 3. Return `DELIVERED` only after commit (including a previously committed receipt);
    otherwise `RETRY_LATER`.
-4. The SDK acknowledges delivery. Bazaar is consumed only after the server
+4. The SDK acknowledges delivery. The selected native store is consumed only after the server
    permits consumption, then the result is reported. Direct acknowledges through
    its pending/delivered contract without marketplace consumption.
 
@@ -412,7 +412,8 @@ A release consumer should not depend on those factories.
 
 ## Limits and release evidence
 
-Only Direct Android and Cafe Bazaar payments are implemented. Unbound Go commerce
+Direct Android and Cafe Bazaar payments are implemented; version 2.4.0 also
+supports [Myket consumable/non-consumable payments](MYKET.md). Unbound Go commerce
 uses its session Bearer at the commerce V2 endpoint. Explicit legacy binding keeps
 the old route and is still required for Direct consumable reconciliation. Full remote
 Paywall element rendering and automatic credential exchange are not implemented.

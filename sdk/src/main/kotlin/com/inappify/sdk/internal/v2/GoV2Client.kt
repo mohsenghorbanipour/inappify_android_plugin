@@ -115,8 +115,8 @@ internal class GoV2Client(
     private fun registerBillingAdapter(adapter: StoreBillingAdapter): Boolean = synchronized(lifecycleLock) {
         !closed && activeBillingAdapters.add(adapter)
     }
-    private fun createBillingAdapter(marketKey: String?): StoreBillingAdapter {
-        val adapter = billingFactory.create(InappifyMarket.BAZAAR, marketKey)
+    private fun createBillingAdapter(marketKey: String?, market: InappifyMarket): StoreBillingAdapter {
+        val adapter = billingFactory.create(market, marketKey)
         if (!registerBillingAdapter(adapter)) {
             runCatching { adapter.close() }
             throw CancellationException("The Inappify client is closed.")
@@ -751,7 +751,7 @@ internal class GoV2Client(
             }
             // A paid attempt owns its persisted offering/product binding. Catalog refreshes
             // may remove that product, but must never force the caller to pay again.
-            if (snapshot.storePlatform == "Bazar" && request.idempotencyKey != null) {
+            if (nativeStoreMarket(snapshot.storePlatform) != null && request.idempotencyKey != null) {
                 val recovery = storage.loadPendingStoreRecoveryState()
                     ?: fail("STORAGE", "STORE_RECOVERY_UNAVAILABLE")
                 if (recovery.operations.any { it.id == request.idempotencyKey })
@@ -763,7 +763,7 @@ internal class GoV2Client(
                 ?: fail("VALIDATION", "PRODUCT_NOT_IN_OFFERING")
             val purchase = when (snapshot.storePlatform) {
                 "DirectAndroid" -> purchaseDirectV2(request, selectedPackage.identifier)
-                "Bazar" -> purchaseStoreV2(activity, request, selectedPackage.identifier)
+                "Bazar", "MyKet" -> purchaseStoreV2(activity, request, selectedPackage.identifier)
                 else -> fail("CONFIGURATION", "UNSUPPORTED_STORE_PLATFORM")
             }
             if (purchase.url != null && !allowedUrl(purchase.url, config.paymentHosts))
@@ -826,37 +826,44 @@ internal class GoV2Client(
         if (closed) throw CancellationException("The Inappify client is closed.")
         if (!sdkApi.enabled || commerceApi?.enabled == false) fail("CONFIGURATION", "V2_DISABLED")
         requireSession()
+        val expectedStore = snapshot.storePlatform
         var session = document.getAsJsonObject("session") ?: fail("CONFIGURATION", "NOT_CONFIGURED")
         if (document.get("sessionInvalid")?.asBoolean == true || isoMillis(session.string("sessionExpiresAt")) <= now()) {
             renewSession(session.string("appUserId"))
             session = document.getAsJsonObject("session") ?: fail("CONFIGURATION", "NOT_CONFIGURED")
         }
-        if (snapshot.storePlatform != "Bazar") fail("CONFIGURATION", "PURCHASE_ROUTE_CHANGED")
+        if (nativeStoreMarket(snapshot.storePlatform) == null || snapshot.storePlatform != expectedStore) fail("CONFIGURATION", "PURCHASE_ROUTE_CHANGED")
         return session.string("sessionToken")
     }
     private suspend fun storeContext(): StoreV2Context {
         val opt = options ?: fail("CONFIGURATION", "NOT_CONFIGURED")
         val token = storeSessionToken()
         val session = document.getAsJsonObject("session") ?: fail("CONFIGURATION", "NOT_CONFIGURED")
+        val market = nativeStoreMarket(snapshot.storePlatform) ?: fail("CONFIGURATION", "UNSUPPORTED_STORE_PLATFORM")
+        if ((market == InappifyMarket.MYKET || opt.market == InappifyMarket.MYKET) &&
+            opt.market != null && opt.market != InappifyMarket.NONE && opt.market != market)
+            fail("CONFIGURATION", "MARKET_KEY_ROUTE_MISMATCH")
         return StoreV2Context(opt.apiKey, token, storeFingerprint(opt),
             digest(session.string("appUserId")), metadata.get().packageIdentifier,
             session.number("appId"), document.get("country")?.asString ?: "IR",
             document.get("appVersion")?.asString ?: metadata.get().versionName,
             null, opt.marketKey?.takeIf(String::isNotBlank)
-                ?: session.get("storeInfo")?.takeUnless { it.isJsonNull }?.asString?.takeIf(String::isNotBlank))
+                ?: session.get("storeInfo")?.takeUnless { it.isJsonNull }?.asString?.takeIf(String::isNotBlank), market)
     }
     private fun storeFingerprint(value: InappifyOptions): String =
         goStoreFingerprint(fingerprint(value), config.commerceApiBaseUrl)
     private suspend fun purchaseStoreV2(activity: Activity?, request: InappifyPurchaseRequest,
         packageIdentifier: String?): InappifyPurchase {
         if (request.country != null || request.appVersion != null ||
-            request.market !in setOf(InappifyMarket.NONE, InappifyMarket.BAZAAR) ||
+            request.market !in setOf(InappifyMarket.NONE, nativeStoreMarket(snapshot.storePlatform)) ||
             request.isCrypto || request.discount != 0L || request.discountCode != null ||
             request.paywallId != null || request.paywallRevision != null)
             fail("VALIDATION", "PURCHASE_OVERRIDE_NOT_ALLOWED")
         val coordinator = storeCoordinator ?: fail("CONFIGURATION", "LARAVEL_V2_NOT_CONFIGURED")
         val context = storeContext()
-        if (context.marketKey.isNullOrBlank()) fail("CONFIGURATION", "BAZAAR_PUBLIC_KEY_REQUIRED")
+        if (context.marketKey.isNullOrBlank()) fail("CONFIGURATION", if (context.market == InappifyMarket.MYKET) "MYKET_PUBLIC_KEY_REQUIRED" else "BAZAAR_PUBLIC_KEY_REQUIRED")
+        if (context.market == InappifyMarket.MYKET && request.productType == InappifyProductType.SUBSCRIPTION)
+            fail("CONFIGURATION", "MYKET_SUBSCRIPTIONS_UNSUPPORTED")
         val attemptId = request.idempotencyKey ?: UUID.randomUUID().toString()
         if (!attemptId.matches(Regex("[A-Za-z0-9_.:-]{1,128}"))) fail("VALIDATION", "PURCHASE_ATTEMPT_INVALID")
         val recovery = storage.loadPendingStoreRecoveryState() ?: fail("STORAGE", "STORE_RECOVERY_UNAVAILABLE")
@@ -864,7 +871,7 @@ internal class GoV2Client(
         if (existing != null) {
             if (existing.appId != context.appId || existing.apiKeyFingerprint != context.apiKeyFingerprint ||
                 existing.customerIdentifierFingerprint != context.customerIdentifierFingerprint ||
-                existing.appIdentifier != context.appIdentifier || existing.store != "bazar" ||
+                existing.appIdentifier != context.appIdentifier || existing.store != context.store ||
                 existing.operation != PendingStoreOperationType.PURCHASE ||
                 !compatibleRetryType(request.productType, existing.productType) ||
                 existing.productIdentifier != request.productIdentifier ||
@@ -875,7 +882,7 @@ internal class GoV2Client(
             return storePurchaseResult(outcome, packageIdentifier)
         }
         val host = activity ?: fail("VALIDATION", "STORE_UI_HOST_REQUIRED")
-        val adapter = createBillingAdapter(context.marketKey)
+        val adapter = createBillingAdapter(context.marketKey, context.market)
         val developerPayload = JsonObject().apply {
             addProperty("offeringIdentifier", request.offeringIdentifier)
             addProperty("productIdentifier", request.productIdentifier)
@@ -892,7 +899,7 @@ internal class GoV2Client(
                 is StoreBillingResult.Success -> billed.purchase
                 is StoreBillingResult.Cancelled -> throw V2Failure(InappifyError(InappifyErrorCode.PURCHASE_CANCELLED,
                     "The marketplace purchase was cancelled."))
-                is StoreBillingResult.Failure -> throw V2Failure(billed.error.toGoPurchaseError(attemptId))
+                is StoreBillingResult.Failure -> throw V2Failure(billed.error.toGoPurchaseError(attemptId, context.store))
             }
         } finally { releaseBillingAdapter(adapter) }
         if (receipt.productIdentifier != request.productIdentifier || receipt.packageName != context.appIdentifier ||
@@ -901,9 +908,9 @@ internal class GoV2Client(
             throw V2Failure(InappifyError(InappifyErrorCode.MALFORMED_RESPONSE,
                 "The marketplace receipt does not match the requested purchase.", details = mapOf(
                     "operation" to "purchase", "serverCode" to "STORE_RECEIPT_SCOPE_MISMATCH",
-                    "store" to "bazar", "attemptId" to attemptId, "outcomeMayHaveCommitted" to true)))
+                    "store" to context.store, "attemptId" to attemptId, "outcomeMayHaveCommitted" to true)))
         val productType = pendingProductType(request.productType)
-        val operation = PendingStoreOperation(attemptId, PendingStoreOperationType.PURCHASE, "bazar",
+        val operation = PendingStoreOperation(attemptId, PendingStoreOperationType.PURCHASE, context.store,
             context.customerToken, context.customerIdentifierFingerprint, context.apiKeyFingerprint,
             context.appIdentifier, context.appId, request.productIdentifier, request.offeringIdentifier,
             productType, PendingStorePurchaseEvidence(receipt.purchaseToken,
@@ -933,7 +940,7 @@ internal class GoV2Client(
         })
         val evidence = operation.evidence
         return RejectedStoreEvidenceTombstone(
-            purchaseTokenFingerprint = digest(evidence.purchaseToken),
+            purchaseTokenFingerprint = digest(if (operation.store == "myket") "myket:${evidence.purchaseToken}" else evidence.purchaseToken),
             apiKeyFingerprint = operation.apiKeyFingerprint,
             customerIdentifierFingerprint = operation.customerIdentifierFingerprint,
             appFingerprint = combined(operation.appIdentifier, operation.appId),
@@ -971,7 +978,8 @@ internal class GoV2Client(
             InappifyStorePurchaseStatus.fromServerValue(state.status.wireValue),
             state.deliveryId ?: outcome.operation.deliveryId,
             state.verificationRequestId ?: outcome.operation.verificationRequestId,
-            state.alreadyProcessed == true || state.status == StorePurchaseStatus.ALREADY_PROCESSED)
+            state.alreadyProcessed == true || state.status == StorePurchaseStatus.ALREADY_PROCESSED,
+            requireNotNull(nativeStoreMarket(outcome.operation.store)))
     }
     private data class StoreReconciliation(
         val purchases: List<InappifyPurchase>,
@@ -984,10 +992,10 @@ internal class GoV2Client(
             details = mapOf("operation" to "storePurchaseVerification", "outcomeMayHaveCommitted" to true,
                 "phase" to outcome.operation.phase.name))
     private suspend fun reconcileStorePurchases(queryOwned: Boolean, explicitRestore: Boolean): StoreReconciliation {
-        if (snapshot.storePlatform != "Bazar") fail("CONFIGURATION", "UNSUPPORTED_STORE_PLATFORM")
+        if (nativeStoreMarket(snapshot.storePlatform) == null) fail("CONFIGURATION", "UNSUPPORTED_STORE_PLATFORM")
         val coordinator = storeCoordinator ?: fail("CONFIGURATION", "LARAVEL_V2_NOT_CONFIGURED")
         val context = storeContext()
-        if (context.marketKey.isNullOrBlank()) fail("CONFIGURATION", "BAZAAR_PUBLIC_KEY_REQUIRED")
+        if (context.marketKey.isNullOrBlank()) fail("CONFIGURATION", if (context.market == InappifyMarket.MYKET) "MYKET_PUBLIC_KEY_REQUIRED" else "BAZAAR_PUBLIC_KEY_REQUIRED")
         val recovery = storage.loadPendingStoreRecoveryState() ?: fail("STORAGE", "STORE_RECOVERY_UNAVAILABLE")
         val purchases = mutableListOf<InappifyPurchase>()
         var restored = 0
@@ -997,7 +1005,7 @@ internal class GoV2Client(
         var firstError: InappifyError? = null
         val knownTokens = mutableSetOf<String>()
         val reservedOperationIds = recovery.operations.mapTo(mutableSetOf()) { it.id }
-        for (pending in recovery.operations.filter { it.store == "bazar" &&
+        for (pending in recovery.operations.filter { it.store == context.store &&
             it.apiKeyFingerprint == context.apiKeyFingerprint &&
             it.customerIdentifierFingerprint == context.customerIdentifierFingerprint &&
             it.appId == context.appId && it.appIdentifier == context.appIdentifier }) {
@@ -1025,11 +1033,10 @@ internal class GoV2Client(
             }
         }
         if (queryOwned) {
-            val adapter = createBillingAdapter(context.marketKey)
+            val adapter = createBillingAdapter(context.marketKey, context.market)
             try {
-                for ((storeType, pendingType) in listOf(
-                    StoreProductType.SUBSCRIPTION to PendingStoreProductType.SUBSCRIPTION,
-                    StoreProductType.IN_APP to PendingStoreProductType.LEGACY_IN_APP)) {
+                for (storeType in context.market.ownedProductTypes) {
+                    val pendingType = if (storeType == StoreProductType.SUBSCRIPTION) PendingStoreProductType.SUBSCRIPTION else PendingStoreProductType.LEGACY_IN_APP
                     val query = if (adapter is PartialStorePurchaseQueryAdapter)
                         adapter.queryPurchasesPartially(storeType) else adapter.queryPurchases(storeType)
                     when (query) {
@@ -1073,7 +1080,7 @@ internal class GoV2Client(
                                     InappifyProductType.SUBSCRIPTION.name -> PendingStoreProductType.SUBSCRIPTION
                                     else -> pendingType
                                 }
-                                val operationId = if (explicitRestore) "restore:${digest(receipt.purchaseToken).take(64)}" else attempt
+                                val operationId = if (explicitRestore) "restore:${digest(if (context.market == InappifyMarket.MYKET) "myket:${receipt.purchaseToken}" else receipt.purchaseToken).take(64)}" else attempt
                                 // A recovered callback must not overwrite another paid receipt's journal.
                                 if (!reservedOperationIds.add(operationId)) {
                                     if (explicitRestore) failed++
@@ -1083,7 +1090,7 @@ internal class GoV2Client(
                                     id = operationId,
                                     operation = if (explicitRestore) PendingStoreOperationType.RESTORE
                                         else PendingStoreOperationType.PURCHASE,
-                                    store = "bazar", customerToken = context.customerToken,
+                                    store = context.store, customerToken = context.customerToken,
                                     customerIdentifierFingerprint = context.customerIdentifierFingerprint,
                                     apiKeyFingerprint = context.apiKeyFingerprint,
                                     appIdentifier = context.appIdentifier, appId = context.appId,
@@ -1129,7 +1136,7 @@ internal class GoV2Client(
         return StoreReconciliation(purchases, InappifyRestoreResult(restored, already, failed), firstError)
     }
     private suspend fun syncStoreConsumables(): InappifyConsumableSyncResult {
-        if (snapshot.storePlatform != "Bazar") fail("CONFIGURATION", "UNSUPPORTED_STORE_PLATFORM")
+        if (nativeStoreMarket(snapshot.storePlatform) == null) fail("CONFIGURATION", "UNSUPPORTED_STORE_PLATFORM")
         // Rebuild missing encrypted checkpoints from the store's owned receipts first.
         val pendingConsumableIds = storage.loadPendingStoreOperations().filter {
             it.productType in setOf(PendingStoreProductType.CONSUMABLE, PendingStoreProductType.LEGACY_IN_APP)
@@ -1139,7 +1146,7 @@ internal class GoV2Client(
         val reconciled = reconciliation.purchases
         val coordinator = storeCoordinator ?: fail("CONFIGURATION", "LARAVEL_V2_NOT_CONFIGURED")
         val context = storeContext()
-        val operations = storage.loadPendingStoreOperations().filter { it.store == "bazar" &&
+        val operations = storage.loadPendingStoreOperations().filter { it.store == context.store &&
             it.apiKeyFingerprint == context.apiKeyFingerprint &&
             it.customerIdentifierFingerprint == context.customerIdentifierFingerprint &&
             it.appId == context.appId && it.appIdentifier == context.appIdentifier }
@@ -1162,7 +1169,7 @@ internal class GoV2Client(
             }
             val deliveryId = outcome.state.deliveryId ?: continue
             val delivery = InappifyConsumableDelivery(deliveryId, operation.productIdentifier,
-                null, InappifyDeliverySource.BAZAAR)
+                null, context.market.deliverySource)
             val handler = deliveryHandler
             val delivered = if (handler == null) false else try {
                 handler.deliver(delivery) == InappifyDeliveryResult.DELIVERED
@@ -1214,11 +1221,11 @@ internal class GoV2Client(
             if (deliveryId <= 0) fail("VALIDATION", "INVALID_DELIVERY_ID")
             if (purchaseClient != null || snapshot.storePlatform == "DirectAndroid")
                 return@run unwrap(requirePurchaseClient().confirmDelivery(deliveryId))
-            if (snapshot.storePlatform != "Bazar") fail("CONFIGURATION", "UNSUPPORTED_STORE_PLATFORM")
+            if (nativeStoreMarket(snapshot.storePlatform) == null) fail("CONFIGURATION", "UNSUPPORTED_STORE_PLATFORM")
             val coordinator = storeCoordinator ?: fail("CONFIGURATION", "LARAVEL_V2_NOT_CONFIGURED")
             val context = storeContext()
             val pending = storage.loadPendingStoreOperations().firstOrNull { it.deliveryId == deliveryId &&
-                it.store == "bazar" && it.appIdentifier == context.appIdentifier &&
+                it.store == context.store && it.appIdentifier == context.appIdentifier &&
                 it.apiKeyFingerprint == context.apiKeyFingerprint &&
                 it.customerIdentifierFingerprint == context.customerIdentifierFingerprint &&
                 it.appId == context.appId } ?: fail("VALIDATION", "DELIVERY_NOT_FOUND")
@@ -1263,7 +1270,7 @@ internal class GoV2Client(
         if (info is InappifyResult.Failure) return@shared info
         val offerings = refreshOfferings()
         if (offerings is InappifyResult.Failure) return@shared offerings
-        if (snapshot.storePlatform == "Bazar" || purchaseClient != null) {
+        if (nativeStoreMarket(snapshot.storePlatform) != null || purchaseClient != null) {
             val sync = syncPendingConsumables()
             if (sync is InappifyResult.Failure) return@shared sync
         }

@@ -54,6 +54,10 @@ import com.inappify.sdk.removesCustomAttribute
 import com.inappify.sdk.internal.billing.AndroidStoreBillingAdapterFactory
 import com.inappify.sdk.internal.billing.PartialStorePurchaseQueryAdapter
 import com.inappify.sdk.internal.billing.StoreBillingAdapter
+import com.inappify.sdk.internal.billing.storeId
+import com.inappify.sdk.internal.billing.nativeStoreMarket
+import com.inappify.sdk.internal.billing.deliverySource
+import com.inappify.sdk.internal.billing.ownedProductTypes
 import com.inappify.sdk.internal.billing.StoreBillingAdapterFactory
 import com.inappify.sdk.internal.billing.StoreBillingError
 import com.inappify.sdk.internal.billing.StoreBillingErrorCode
@@ -446,7 +450,7 @@ internal class DefaultInappifyClient(
         val configured = completeLifecycleMutation lifecycle@{
             if (
                 reusable != null && reusable.storePlatform == null &&
-                normalized.market == InappifyMarket.BAZAAR
+                normalized.market != InappifyMarket.NONE
             ) {
                 // Older sessions need route metadata, not a new customer. Keep
                 // the same-key identity and recovery binding across this refresh.
@@ -1662,6 +1666,9 @@ internal class DefaultInappifyClient(
                 ),
             )
         }
+        if (route.market == InappifyMarket.MYKET && (normalized.productType == InappifyProductType.SUBSCRIPTION ||
+                normalized.dynamicPriceToken != null)) return purchaseFailure(InappifyError(
+            InappifyErrorCode.UNSUPPORTED_OPERATION, "Myket does not support subscriptions or dynamic price tokens."))
         val effectiveMarket = route.market
         val effectiveMarketKey = when {
             route.usesStoreV2 -> current.marketKey
@@ -1674,7 +1681,7 @@ internal class DefaultInappifyClient(
             return purchaseFailure(
                 InappifyError(
                     code = InappifyErrorCode.INVALID_CONFIGURATION,
-                    message = "A Cafe Bazaar RSA public key is required for store purchases.",
+                    message = "A public RSA key for the configured marketplace is required for store purchases.",
                     details = mapOf("operation" to OPERATION_PURCHASE, "outcomeMayHaveCommitted" to false),
                 ),
             )
@@ -1697,7 +1704,7 @@ internal class DefaultInappifyClient(
             if (existing != null) {
                 val sameLogicalPurchase =
                     existing.matchesStoreV2Binding(current, metadata) &&
-                        existing.store.equals(STORE_BAZAAR, ignoreCase = true) &&
+                        existing.store.equals(route.market.storeId, ignoreCase = true) &&
                         existing.productIdentifier == normalized.productIdentifier &&
                         existing.offeringIdentifier == normalized.offeringIdentifier &&
                         existing.matchesRequestedProductType(normalized.productType)
@@ -1769,8 +1776,8 @@ internal class DefaultInappifyClient(
                     ?: return purchaseFailure(
                         StoreBillingError(
                             code = StoreBillingErrorCode.UI_HOST_UNAVAILABLE,
-                            message = "A foreground Activity is required for Bazaar billing.",
-                        ).toPublicError(normalized.attemptId),
+                            message = "A foreground Activity is required for marketplace billing.",
+                        ).toPublicError(normalized.attemptId, effectiveMarket),
                     )
                 when (
                     val storeResult = purchaseFromStore(
@@ -1801,7 +1808,7 @@ internal class DefaultInappifyClient(
 
                     is StoreBillingResult.Failure -> {
                         return purchaseFailure(
-                            storeResult.error.toPublicError(normalized.attemptId),
+                            storeResult.error.toPublicError(normalized.attemptId, effectiveMarket),
                         )
                     }
                 }
@@ -2028,7 +2035,7 @@ internal class DefaultInappifyClient(
         val pending = PendingStoreOperation(
             id = request.attemptId,
             operation = PendingStoreOperationType.PURCHASE,
-            store = STORE_BAZAAR,
+            store = requireNotNull(current.resolvePurchaseRoute(current.market ?: InappifyMarket.NONE)).market.storeId,
             customerToken = sessionToken,
             customerIdentifierFingerprint = customerBinding,
             apiKeyFingerprint = apiKeyFingerprint,
@@ -2112,7 +2119,7 @@ internal class DefaultInappifyClient(
                     details = mapOf(
                         "operation" to OPERATION_PURCHASE,
                         "attemptId" to outcome.operation.id,
-                        "store" to STORE_BAZAAR,
+                        "store" to outcome.operation.store,
                         "outcomeMayHaveCommitted" to true,
                     ),
                 ),
@@ -2157,6 +2164,7 @@ internal class DefaultInappifyClient(
             ?: verificationRequestId,
         alreadyProcessed = state.alreadyProcessed == true ||
             state.status == StorePurchaseStatus.ALREADY_PROCESSED,
+        market = requireNotNull(nativeStoreMarket(store)),
     )
 
     private fun StorePurchase.toPendingEvidence(): PendingStorePurchaseEvidence =
@@ -2203,7 +2211,8 @@ internal class DefaultInappifyClient(
         current: InternalSessionState,
         metadata: AppMetadata,
     ): Boolean =
-        apiKeyFingerprint == current.apiKeyFingerprint &&
+        nativeStoreMarket(store) == current.resolvePurchaseRoute(current.market ?: InappifyMarket.NONE)?.market &&
+            apiKeyFingerprint == current.apiKeyFingerprint &&
             customerIdentifierFingerprint == current.customerBindingFingerprint() &&
             appIdentifier == metadata.packageIdentifier &&
             (appId == null || appId == current.appId)
@@ -2226,6 +2235,7 @@ internal class DefaultInappifyClient(
         appVersion = requireNotNull(appVersion),
         forceVersion = forceVersion,
         marketKey = marketKey,
+        market = requireNotNull(resolvePurchaseRoute(market ?: InappifyMarket.NONE)).market,
     )
 
     private fun PendingStoreOperation.packageIdentifierFromPayload(): String? =
@@ -2240,7 +2250,7 @@ internal class DefaultInappifyClient(
         current: InternalSessionState,
         forceVersion: Long? = current.forceVersion,
     ): RejectedStoreEvidenceTombstone = RejectedStoreEvidenceTombstone(
-        purchaseTokenFingerprint = evidence.purchaseToken.fingerprint(),
+        purchaseTokenFingerprint = (if (store == "myket") "myket:${evidence.purchaseToken}" else evidence.purchaseToken).fingerprint(),
         apiKeyFingerprint = apiKeyFingerprint,
         customerIdentifierFingerprint = customerIdentifierFingerprint,
         appFingerprint = fingerprintComponents(appIdentifier, appId),
@@ -2296,7 +2306,7 @@ internal class DefaultInappifyClient(
         details = buildMap {
             put("operation", operation)
             attemptId?.let { put("attemptId", it) }
-            put("store", STORE_BAZAAR)
+            put("store", nativeStoreMarket(state.get().storePlatform)?.storeId ?: STORE_BAZAAR)
             put("outcomeMayHaveCommitted", false)
         },
     )
@@ -2309,7 +2319,7 @@ internal class DefaultInappifyClient(
         details = mapOf(
             "operation" to OPERATION_PURCHASE,
             "attemptId" to attemptId,
-            "store" to STORE_BAZAAR,
+            "store" to (nativeStoreMarket(state.get().storePlatform)?.storeId ?: STORE_BAZAAR),
             "outcomeMayHaveCommitted" to true,
         ),
     )
@@ -2534,7 +2544,7 @@ internal class DefaultInappifyClient(
                 deliveryId = deliveryId,
                 productIdentifier = purchase.productIdentifier,
                 transactionIdentifier = null,
-                source = InappifyDeliverySource.BAZAAR,
+                source = purchase.market.deliverySource,
             ) to purchase
         }
         if (handler == null) {
@@ -2987,7 +2997,7 @@ internal class DefaultInappifyClient(
             )
         val matchingRecoveryOperations = recoveryState.operations
             .filter { operation ->
-                operation.store.equals(STORE_BAZAAR, ignoreCase = true) &&
+                operation.store.equals(context.store, ignoreCase = true) &&
                     operation.matchesStoreV2Binding(current, metadata)
             }
         val pending = matchingRecoveryOperations
@@ -3024,15 +3034,13 @@ internal class DefaultInappifyClient(
         val owned = mutableListOf<Pair<StorePurchase, InappifyProductType>>()
         var queryFailureCount = 0
         var queryError: InappifyError? = null
-        listOf(
-            StoreProductType.SUBSCRIPTION to InappifyProductType.SUBSCRIPTION,
-            StoreProductType.IN_APP to InappifyProductType.NON_CONSUMABLE,
-        ).forEach { (storeType, fallbackType) ->
+        context.market.ownedProductTypes.forEach { storeType ->
+            val fallbackType = if (storeType == StoreProductType.SUBSCRIPTION) InappifyProductType.SUBSCRIPTION else InappifyProductType.NON_CONSUMABLE
             when (
                 val queried = queryStorePurchases(
                     current = current,
                     productType = storeType,
-                    market = InappifyMarket.BAZAAR,
+                    market = context.market,
                     queryMode = StorePurchaseQueryMode.PARTIAL,
                 )
             ) {
@@ -3047,7 +3055,7 @@ internal class DefaultInappifyClient(
 
                 is StorePurchaseQueryResult.Failure -> {
                     queryFailureCount += 1
-                    if (queryError == null) queryError = queried.error.toPublicSyncError()
+                    if (queryError == null) queryError = queried.error.toPublicSyncError(context.market)
                 }
             }
         }
@@ -3064,6 +3072,10 @@ internal class DefaultInappifyClient(
                 fallbackProductType = fallbackType,
             )
             if (normalized == null) {
+                if (explicitRestore) failedCount += 1
+                continue
+            }
+            if (context.market == InappifyMarket.MYKET && normalized.productType == InappifyProductType.SUBSCRIPTION) {
                 if (explicitRestore) failedCount += 1
                 continue
             }
@@ -3087,7 +3099,7 @@ internal class DefaultInappifyClient(
             val operation = PendingStoreOperation(
                 id = normalized.attemptId,
                 operation = operationType,
-                store = STORE_BAZAAR,
+                store = context.store,
                 customerToken = sessionRequest.token,
                 customerIdentifierFingerprint = customerBinding,
                 apiKeyFingerprint = apiKeyFingerprint,
@@ -3120,7 +3132,7 @@ internal class DefaultInappifyClient(
             )
         }
 
-        if (queryFailureCount == 2 && owned.isEmpty() && purchases.isEmpty()) {
+        if (queryFailureCount == context.market.ownedProductTypes.size && owned.isEmpty() && purchases.isEmpty()) {
             return StoreV2Reconciliation.failure(
                 snapshot = current.toSnapshot(),
                 error = requireNotNull(queryError),
@@ -3679,6 +3691,7 @@ internal class DefaultInappifyClient(
         expectedRecoveryBinding: String?,
         fallbackProductType: InappifyProductType = InappifyProductType.NON_CONSUMABLE,
         requireRecoveryBinding: Boolean = true,
+        recoveryMarket: InappifyMarket = InappifyMarket.BAZAAR,
     ): NormalizedPurchaseRequest? {
         return try {
             val payload = gson.fromJson(developerPayload, JsonObject::class.java) ?: return null
@@ -3727,7 +3740,7 @@ internal class DefaultInappifyClient(
                 appVersion = null,
                 discount = discount,
                 isCrypto = isCrypto,
-                market = InappifyMarket.BAZAAR,
+                market = recoveryMarket,
                 marketKey = null,
                 isLostPurchase = false,
                 lostPurchaseToken = null,
@@ -3753,6 +3766,7 @@ internal class DefaultInappifyClient(
             expectedRecoveryBinding = null,
             fallbackProductType = fallbackProductType,
             requireRecoveryBinding = false,
+            recoveryMarket = requireNotNull(current.resolvePurchaseRoute(current.market ?: InappifyMarket.NONE)).market,
         )?.let { return it }
 
         val matchingPackage = current.offerings
@@ -3778,13 +3792,13 @@ internal class DefaultInappifyClient(
             productIdentifier = productIdentifier,
             offeringIdentifier = matchingPackage.first,
             packageIdentifier = matchingPackage.second.identifier,
-            attemptId = "restore-${purchaseToken.fingerprint()}",
+            attemptId = "restore-${(if (nativeStoreMarket(current.storePlatform) == InappifyMarket.MYKET) "myket:$purchaseToken" else purchaseToken).fingerprint()}",
             apiKey = null,
             country = null,
             appVersion = null,
             discount = 0L,
             isCrypto = false,
-            market = InappifyMarket.BAZAAR,
+            market = requireNotNull(current.resolvePurchaseRoute(current.market ?: InappifyMarket.NONE)).market,
             marketKey = null,
             isLostPurchase = false,
             lostPurchaseToken = null,
@@ -3843,8 +3857,9 @@ internal class DefaultInappifyClient(
     private fun InternalSessionState.purchaseRecoveryBinding(): String? =
         purchaseRecoveryId?.safePurchaseAttemptId()
 
-    private fun StoreBillingError.toPublicError(attemptId: String): InappifyError {
-        val outcomeMayHaveCommitted = code == StoreBillingErrorCode.PURCHASE_FAILED ||
+    private fun StoreBillingError.toPublicError(attemptId: String, market: InappifyMarket = InappifyMarket.BAZAAR): InappifyError {
+        val outcomeMayHaveCommitted = (market == InappifyMarket.MYKET && code == StoreBillingErrorCode.ADAPTER_CLOSED) ||
+            code == StoreBillingErrorCode.PURCHASE_FAILED ||
             code == StoreBillingErrorCode.CONNECTION_LOST ||
             code == StoreBillingErrorCode.OPERATION_TIMEOUT ||
             code == StoreBillingErrorCode.UI_HOST_DESTROYED ||
@@ -3900,14 +3915,14 @@ internal class DefaultInappifyClient(
             details = mapOf(
                 "operation" to OPERATION_PURCHASE,
                 "attemptId" to attemptId,
-                "store" to "bazar",
+                "store" to market.storeId,
                 "storeCode" to code.name,
                 "outcomeMayHaveCommitted" to outcomeMayHaveCommitted,
             ),
         )
     }
 
-    private fun StoreBillingError.toPublicSyncError(): InappifyError {
+    private fun StoreBillingError.toPublicSyncError(market: InappifyMarket = InappifyMarket.BAZAAR): InappifyError {
         val publicCode = when (code) {
             StoreBillingErrorCode.PURCHASE_IN_PROGRESS ->
                 InappifyErrorCode.PURCHASE_IN_PROGRESS
@@ -3947,7 +3962,7 @@ internal class DefaultInappifyClient(
             isRetryable = isRetryable,
             details = mapOf(
                 "operation" to OPERATION_SYNC_PURCHASES,
-                "store" to "bazar",
+                "store" to market.storeId,
                 "storeCode" to code.name,
                 "outcomeMayHaveCommitted" to false,
             ),
@@ -4597,7 +4612,7 @@ internal class DefaultInappifyClient(
             // selects Bazaar through storePlatform. Direct V1 never
             // reads this value.
             InappifyMarket.NONE -> options.marketKey.normalized()
-            InappifyMarket.BAZAAR -> options.marketKey.normalized() ?: return null
+            InappifyMarket.BAZAAR, InappifyMarket.MYKET -> options.marketKey.normalized() ?: return null
         }
         val country = options.country
             .normalized()
@@ -4636,7 +4651,7 @@ internal class DefaultInappifyClient(
         val configured = storePlatform
             ?.trim()
             ?.takeIf(String::isNotEmpty)
-            ?: return PurchaseRoute(
+            ?: return if (requestedMarket == InappifyMarket.MYKET) null else PurchaseRoute(
                 market = requestedMarket,
                 isServerAuthoritative = false,
                 usesStoreV2 = false,
@@ -4659,14 +4674,17 @@ internal class DefaultInappifyClient(
                     usesStoreV2 = false,
                 )
 
-            // MyKet is deliberately deferred to the next implementation phase.
-            "myket" -> null
+            "myket" -> PurchaseRoute(InappifyMarket.MYKET, isServerAuthoritative = true, usesStoreV2 = true)
             else -> null
         }
+        if ((requestedMarket == InappifyMarket.MYKET || market == InappifyMarket.MYKET ||
+                serverRoute?.market == InappifyMarket.MYKET) &&
+            ((market != null && market != InappifyMarket.NONE && market != serverRoute?.market) ||
+                (requestedMarket != InappifyMarket.NONE && requestedMarket != serverRoute?.market))) return null
         // Unsupported stores still fail closed; this compatibility rule only
         // selects between the two implemented Android payment markets.
         return if (
-            preserveRequestedMarket && serverRoute != null &&
+            preserveRequestedMarket && serverRoute != null && serverRoute.market != InappifyMarket.MYKET &&
             serverRoute.market != requestedMarket
         ) {
             PurchaseRoute(requestedMarket, isServerAuthoritative = false, usesStoreV2 = false)
