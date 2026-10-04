@@ -3,7 +3,7 @@
 Library versions are independent of the V1, Laravel Store V2 and Go V2 HTTP
 protocols. See the [upgrade guide](docs/MIGRATION.md) before changing factories.
 
-## [2.5.0-rc.1] - 2026-10-04
+## [2.5.0-rc.2] - 2026-10-04
 
 Canary release of the unified V2 commerce contract; live device/backend acceptance
 remains required before broad rollout.
@@ -25,6 +25,9 @@ remains required before broad rollout.
   and the existing Myket receiver warning plus 14 dependency-update suggestions.
   A bounded JVM comparison retains all examined public/protected declarations
   from 2.4.0. Device/backend acceptance remains pending.
+- The superseded rc.1 tag exposed a race in the new asynchronous diagnostic test.
+  rc.2 waits for all trace callbacks before closing the client and uses a thread-safe
+  collection. Runtime behavior is unchanged apart from the reported SDK version.
 - See [migration requirements](docs/MIGRATION.md#upgrading-from-24-to-25).
 
 ## [2.4.0] - 2026-10-03

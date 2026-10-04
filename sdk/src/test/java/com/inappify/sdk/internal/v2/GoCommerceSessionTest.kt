@@ -247,8 +247,9 @@ class GoCommerceSessionTest {
         server.start()
         val http = okhttp3.OkHttpClient.Builder().retryOnConnectionFailure(false).build()
         val transport = OkHttpTransport.create(server.url("/app/v2/"), http)
-        val traces = mutableListOf<InappifyHttpTrace>()
-        transport.addHttpTraceListener { traces += it }
+        val traces = java.util.concurrent.CopyOnWriteArrayList<InappifyHttpTrace>()
+        val tracesDelivered = java.util.concurrent.CountDownLatch(7)
+        transport.addHttpTraceListener { traces += it; tracesDelivered.countDown() }
         fun enqueue(data: String) = server.enqueue(okhttp3.mockwebserver.MockResponse().setHeader("Content-Type", "application/json")
             .setBody("""{"status":true,"data":$data}"""))
         try {
@@ -274,6 +275,8 @@ class GoCommerceSessionTest {
                 service.markStoreDeliveryDelivered(StoreDeliveryApiRequest("legacy-key", "legacy-token", 7))
                 enqueue("""{"status":"COMPLETED","deliveryId":7}""")
                 service.reportStoreConsumeResult(StoreConsumeResultApiRequest("legacy-key", "legacy-token", 7, StoreConsumeResult.SUCCEEDED, null))
+                // Diagnostics run on their own executor; closing the owning client cancels queued callbacks.
+                assertTrue("All HTTP diagnostics must arrive before close", tracesDelivered.await(5, java.util.concurrent.TimeUnit.SECONDS))
             }
             val expected = listOf("purchase", "consumable-deliveries/pending", "consumable-deliveries/7/delivered",
                 "store/purchases", "store/verifications/9/status", "store/deliveries/7/delivered", "store/deliveries/7/consume-result")

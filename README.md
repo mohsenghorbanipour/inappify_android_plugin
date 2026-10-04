@@ -7,7 +7,7 @@
 Native Android SDK for Inappify purchases, customer information, offerings,
 entitlements, discount codes, and customer attributes.
 
-Version **2.5.0-rc.1** is a canary for the unified Go-session commerce contract:
+Version **2.5.0-rc.2** is a canary for the unified Go-session commerce contract:
 all V2 purchase and fulfillment requests use the current session Bearer, with no
 legacy API-key/customer-token fields in their bodies. Direct fulfillment is now
 native to V2, and the old credential bridge is deprecated and disabled.
@@ -116,7 +116,7 @@ Add the versioned library module:
 dependencies {
     implementation(
         "com.github.mohsenghorbanipour:" +
-            "inappify_android_plugin:v2.5.0-rc.1",
+            "inappify_android_plugin:v2.5.0-rc.2",
     )
 }
 ```

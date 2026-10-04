@@ -51,7 +51,7 @@ plan. Runtime key discovery cannot establish trust in unrelated key material.
 
 ## Local evidence
 
-### 2.5.0-rc.1 unified V2 commerce — October 4, 2026
+### 2.5.0-rc.2 unified V2 commerce — October 4, 2026
 
 Canary based on the Android purchase migration contract (document 1.1). All
 **621 JVM tests in 34 suites** pass with zero failures/errors/skips. Coverage
@@ -76,6 +76,11 @@ with the hash-verified public 2.4.0 AAR examines 89 classes in each artifact and
 finds no removed/changed declarations. This includes retaining the deprecated
 bridge signature; its explicitly changed behavior requires host migration. The
 comparison is not comprehensive Kotlin metadata or runtime/device certification.
+
+The first rc.1 tag CI exposed a diagnostic-test timing race: the fixture closed
+the client before its asynchronous trace callbacks finished. rc.2 synchronizes
+that assertion without changing production diagnostics or commerce behavior.
+The corrected HTTP/diagnostic test also passed 30 consecutive isolated runs.
 
 Use this canary for staged backend/device acceptance. No claim of a successful
 real payment, production rollout or automatic Flutter protocol migration is made.

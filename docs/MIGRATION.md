@@ -5,7 +5,7 @@ Do not replace the factory merely because the dependency version is 2.x.
 
 ## Upgrading from 2.4 to 2.5
 
-- `v2.5.0-rc.1` is a canary for the unified V2 commerce contract. The default
+- `v2.5.0-rc.2` is a canary for the unified V2 commerce contract. The default
   `InappifyClient.create(context)` factory and V1 wire/storage behavior remain unchanged.
   Library version 2.x alone does not select the Go protocol.
 - `InappifyV2Client.create(context)` uses the current Go `sessionToken` as Bearer
