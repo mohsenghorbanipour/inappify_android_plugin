@@ -51,6 +51,20 @@ plan. Runtime key discovery cannot establish trust in unrelated key material.
 
 ## Local evidence
 
+### 2.5.0 version alignment — October 4, 2026
+
+The release tag, dependency and runtime `sdkVersion` are exactly `2.5.0`.
+Configure/offerings therefore send `2.5.0` for server-side targeting. A build guard
+requires numeric `major.minor.patch` without prefixes or suffixes. Commerce and
+recovery code is unchanged from the preceding candidate.
+
+An independent public-source build reran all 95 tasks: **621 JVM tests in 34
+suites**, zero failures/errors/skips; release lint with zero errors and the same
+15 warnings; AAR/publication sources, Maven metadata and instrumentation compilation.
+The bounded comparison with the public 2.4.0 AAR again finds no removed/changed
+public/protected declarations among 89 classes. The release AAR reports exactly
+`SDK_VERSION = "2.5.0"`. Real device/backend purchases remain untested.
+
 ### 2.5.0-rc.2 unified V2 commerce — October 4, 2026
 
 Canary based on the Android purchase migration contract (document 1.1). All

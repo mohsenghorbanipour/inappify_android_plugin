@@ -9,6 +9,9 @@ plugins {
 val sdkGroup: String = providers.gradleProperty("GROUP").get()
 val sdkArtifactId: String = providers.gradleProperty("POM_ARTIFACT_ID").get()
 val sdkVersion: String = providers.gradleProperty("VERSION_NAME").get()
+require(Regex("(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)").matches(sdkVersion)) {
+    "VERSION_NAME must use major.minor.patch without a prefix or suffix (for example, 2.5.0)."
+}
 
 group = sdkGroup
 version = sdkVersion

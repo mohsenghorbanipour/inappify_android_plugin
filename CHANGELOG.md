@@ -3,6 +3,21 @@
 Library versions are independent of the V1, Laravel Store V2 and Go V2 HTTP
 protocols. See the [upgrade guide](docs/MIGRATION.md) before changing factories.
 
+## [2.5.0] - 2026-10-04
+
+- Publish the unified V2 session commerce implementation as `2.5.0`. The release
+  tag, Maven dependency and SDK version sent to Configure/offerings use exactly
+  `2.5.0`, with no prefix or suffix. Payment and recovery behavior is unchanged
+  from the preceding release candidate.
+- Require numeric `major.minor.patch` versions during the SDK build and enable
+  CI for numeric release tags. Existing published tags remain unchanged.
+- Verification: 621 JVM tests in 34 suites pass; release lint has zero errors and
+  the same 15 warnings. Release artifacts, Maven metadata and instrumentation
+  compile successfully. Bounded JVM comparison with 2.4.0 finds no removed/changed
+  public/protected declarations.
+- See [migration requirements](docs/MIGRATION.md#upgrading-from-24-to-25).
+  Live device/backend purchase acceptance remains pending.
+
 ## [2.5.0-rc.2] - 2026-10-04
 
 Canary release of the unified V2 commerce contract; live device/backend acceptance

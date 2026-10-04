@@ -10,6 +10,10 @@ credentials, signing files or local engineering notes.
    [acceptance evidence](../V2_CONTRACT.md) against the actual code.
 3. Set `VERSION_NAME` in `gradle.properties`; align dependency examples and
    the release tag. Replace the changelog's Unreleased marker only when releasing.
+   Starting with `2.5.0`, versions and new tags use exactly `major.minor.patch`
+   (for example, `2.5.0`), with no `v` prefix, prerelease suffix or build metadata.
+   The build rejects other formats. Keep Flutter's native dependency and Dart/iOS
+   `goV2SdkVersion` identical to this version. Preserve previously published tags.
 4. Audit the staged files, not only the working directory. Ignoring a file does
    not remove its prior commits or existing remote copies.
 

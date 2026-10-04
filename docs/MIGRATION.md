@@ -5,9 +5,12 @@ Do not replace the factory merely because the dependency version is 2.x.
 
 ## Upgrading from 2.4 to 2.5
 
-- `v2.5.0-rc.2` is a canary for the unified V2 commerce contract. The default
+- `2.5.0` implements the unified V2 commerce contract. The default
   `InappifyClient.create(context)` factory and V1 wire/storage behavior remain unchanged.
   Library version 2.x alone does not select the Go protocol.
+- The release tag, dependency version and reported `sdkVersion` are exactly
+  `2.5.0`, without a prefix or suffix. Go offerings send this exact version to
+  server-side targeting; update Flutter's native dependency and Dart version together.
 - `InappifyV2Client.create(context)` uses the current Go `sessionToken` as Bearer
   for **all seven** Laravel V2 purchase/fulfillment routes. No legacy `apikey`,
   customer `token`, `appIdentifier`, `country`, `appVersion` or `forceVersion`
