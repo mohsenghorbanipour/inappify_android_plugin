@@ -58,6 +58,7 @@ class GoV2ClientTest {
                 "logout" -> { identity = anonymousId(); transport.response(signing.envelope(identity)) }
                 "customerInfo" -> transport.response(signing.envelope(identity))
                 "offerings" -> transport.response(jsonObject("""{"status":true,"offerings":[{"identifier":"default","isDefault":true},{"identifier":"targeted"}],"currentOffering":"targeted","placements":{"onboarding":"default","settings":null}}"""))
+                "consumable-deliveries/pending" -> transport.response(jsonObject("""{"status":true,"data":{"deliveries":[]}}"""))
                 "purchase" -> transport.response(jsonObject("""{"status":true,"data":{"purchaseStatus":"DONE"}}"""))
                 "attributes" -> TransportResult.Response(HttpResponse(204, null, null))
                 "validateDiscountCode" -> transport.response(jsonObject("""{"status":true,"data":{"is_valid":false,"error_code":2,"code":"","discount_id":0,"discount_code_id":0,"percent":0,"message":"Invalid","payment_links":[]}}"""))
@@ -435,11 +436,11 @@ class GoV2ClientTest {
             assertEquals(1, transport.requests.count { it.path == "customerInfo" })
         }
     }
-    @Test fun repeated401StopsAfterOneReconfiguration() = runBlocking {
+    @Test fun repeatedExpired401StopsAfterOneReconfiguration() = runBlocking {
         client().use { sdk ->
             configured(sdk)
             transport.handler = { req -> if (req.path == "configure") transport.response(signing.envelope()) else
-                transport.response(jsonObject("""{"status":false,"code":"SESSION_INVALID"}"""), 401) }
+                transport.response(jsonObject("""{"status":false,"code":"SESSION_EXPIRED"}"""), 401) }
             assertTrue(sdk.refreshCustomerInfo() is InappifyResult.Failure)
             assertEquals(2, transport.requests.count { it.path == "configure" })
             assertEquals(2, transport.requests.count { it.path == "customerInfo" })
@@ -517,7 +518,7 @@ class GoV2ClientTest {
             assertEquals("{\"code\":\"WRONG\"}", transport.requests.last().jsonBody)
         }
     }
-    @Test fun unboundDirectConsumableCanCreateCheckoutButCannotInventLegacyFulfillmentCredentials() = runBlocking {
+    @Test fun directConsumableUsesSessionForCheckoutAndPendingDeliveries() = runBlocking {
         client().use { sdk ->
             configured(sdk)
             val base = transport.handler
@@ -540,10 +541,13 @@ class GoV2ClientTest {
             assertEquals("coins", jsonObject(checkout.jsonBody).string("productIdentifier"))
             val before = transport.requests.size
             val confirmation = sdk.confirmDelivery(7) as InappifyResult.Failure
-            val sync = sdk.syncPendingConsumables() as InappifyResult.Failure
-            assertEquals("LARAVEL_CREDENTIAL_REQUIRED", confirmation.error.details["serverCode"])
-            assertEquals("LARAVEL_CREDENTIAL_REQUIRED", sync.error.details["serverCode"])
+            assertEquals("DELIVERY_NOT_FOUND", confirmation.error.details["serverCode"])
             assertEquals(before, transport.requests.size)
+            val sync = sdk.syncPendingConsumables() as InappifyResult.Success
+            assertEquals(0, sync.data.discoveredCount)
+            val pending = transport.requests.single { it.path == "consumable-deliveries/pending" }
+            assertEquals("{}", pending.jsonBody)
+            assertEquals("Bearer go-session-token", pending.headers["Authorization"])
         }
     }
     @Test fun killSwitchKeepsVerifiedCacheAndBlocksNetwork() = runBlocking {

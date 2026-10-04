@@ -51,4 +51,13 @@ class GoV2StoreServiceTest {
             fail("Cancellation must propagate")
         } catch (_: CancellationException) { }
     }
+    @Test fun rateLimitPreservesRetryAfterForDurableCoordinatorBackoff() = runBlocking {
+        transport.handler = { transport.response(jsonObject("""{"status":false,"code":"RATE_LIMITED"}"""), 429,
+            mapOf("Retry-After" to "300")) }
+        val result = service.getStoreVerificationStatus(StoreVerificationStatusApiRequest("unused", "unused", 9)) as StoreServiceResult.Response
+        assertEquals(429, result.statusCode)
+        assertEquals(300L, result.retryAfterSeconds)
+        assertEquals(1, transport.requests.size)
+    }
+
 }

@@ -6,9 +6,11 @@ import kotlinx.coroutines.CancellationException
 
 /** Adapts the existing durable Bazaar coordinator to the session-scoped Laravel V2 API. */
 internal class GoV2StoreService(
-    private val api: GoApi,
-    private val sessionToken: suspend () -> String,
+    private val request: suspend (String, JsonObject) -> GoApiResponse,
 ) : InappifyService {
+    constructor(api: GoApi, sessionToken: suspend () -> String) : this({ endpoint, body ->
+        api.requestWithMetadata(endpoint, sessionToken(), body, retry = false)
+    })
     override suspend fun configure(request: ConfigureApiRequest): ServiceResult = unsupported()
     override suspend fun login(request: LoginApiRequest): ServiceResult = unsupported()
     override suspend fun logout(request: LogoutApiRequest): ServiceResult = unsupported()
@@ -50,8 +52,8 @@ internal class GoV2StoreService(
     private suspend fun call(endpoint: String, body: JsonObject, nestedPurchase: Boolean = false): StoreServiceResult {
         return try {
             // Submission is keyed by store receipt on the server. The coordinator owns replay/backoff.
-            val response = api.request(endpoint, sessionToken(), body, retry = false)
-            val data = response.getAsJsonObject("data") ?: return malformed()
+            val response = request(endpoint, body)
+            val data = response.body.getAsJsonObject("data") ?: return malformed()
             val state = (if (nestedPurchase) data.getAsJsonObject("purchase")
                 else data.get("purchase")?.takeUnless { it.isJsonNull }?.asJsonObject ?: data) ?: return malformed()
             val status = state.text("status")?.let { value ->
@@ -63,14 +65,14 @@ internal class GoV2StoreService(
                 eventId = state.long("eventId"),
                 deliveryId = state.long("deliveryId"),
                 verificationRequestId = state.long("verificationRequestId"),
-                retryAfter = state.long("retryAfter"),
+                retryAfter = listOfNotNull(state.long("retryAfter"), response.retryAfterSeconds).maxOrNull(),
                 errorCode = state.text("errorCode"),
                 message = state.text("message"),
                 alreadyProcessed = state.bool("alreadyProcessed"),
                 source = state.text("source"),
                 productIdentifier = state.text("productIdentifier"),
                 alreadyDelivered = state.bool("alreadyDelivered"),
-            ), false, null, null, null), null)
+            ), false, null, null, null), null, response.retryAfterSeconds)
         } catch (failure: V2Failure) {
             val details = failure.sdkError.details
             val status = details["httpStatus"] as? Int
@@ -80,7 +82,7 @@ internal class GoV2StoreService(
                 "DECODING" -> ServiceFailureKind.MALFORMED_RESPONSE
                 else -> ServiceFailureKind.UNKNOWN
             }) else StoreServiceResult.Response(status, StoreBackendResponse(false, null, false, null,
-                details["serverCode"] as? String, null), null)
+                details["serverCode"] as? String, null), null, details["retryAfterSeconds"] as? Long)
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (_: Exception) {

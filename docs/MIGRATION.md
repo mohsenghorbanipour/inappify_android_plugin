@@ -3,6 +3,37 @@
 This guide separates a **library upgrade** from a **Go protocol migration**.
 Do not replace the factory merely because the dependency version is 2.x.
 
+## Upgrading from 2.4 to 2.5
+
+- `v2.5.0-rc.1` is a canary for the unified V2 commerce contract. The default
+  `InappifyClient.create(context)` factory and V1 wire/storage behavior remain unchanged.
+  Library version 2.x alone does not select the Go protocol.
+- `InappifyV2Client.create(context)` uses the current Go `sessionToken` as Bearer
+  for **all seven** Laravel V2 purchase/fulfillment routes. No legacy `apikey`,
+  customer `token`, `appIdentifier`, `country`, `appVersion` or `forceVersion`
+  appears in those request bodies. Nested store `purchase.token` remains required.
+  The public SDK key is still used only to bootstrap/renew the Go Configure session.
+- Remove `bindLegacyPurchaseClient` calls. Its binary signature is retained,
+  but it now returns `LEGACY_PURCHASE_BRIDGE_REMOVED` without touching either
+  client's state. Recover pre-existing V1 payments with the original V1 client,
+  credentials and host ledger. Do not relabel or copy their delivery IDs/receipts
+  into the Go journal; no automatic credential or paid-journal migration occurs.
+- Direct consumables now use `/consumable-deliveries/pending` and
+  `/consumable-deliveries/{id}/delivered` under the commerce V2 base. Register the
+  host's durable, idempotent delivery handler or first discover deliveries with
+  `syncPendingConsumables`, durably grant them, then call `confirmDelivery(id)`.
+  A confirmation requires a delivery observed in this identity/endpoint scope.
+  Persisted host-grant checkpoints allow ACK retry after restart without invoking
+  the handler again; the host must still deduplicate a crash before SDK checkpointing.
+- Only HTTP 401 `SESSION_EXPIRED` triggers one Configure and one replay. The new
+  session is verified and saved atomically before retry. Other auth errors return
+  to the caller. Store retry checkpoints honor body and HTTP `Retry-After`.
+- Go store journal format, recovery namespace and delivery-before-consume ordering
+  remain unchanged. Keep the original identity/endpoint for pending operations.
+- This release changes the native Android library. Flutter callers explicitly
+  selecting `legacyV1` must migrate their integration to Go V2 separately; updating
+  the dependency alone will not change their protocol.
+
 ## Upgrading from 2.3 to 2.4
 
 - Update the dependency to `v2.4.0`. Existing Bazaar and Direct clients retain
@@ -37,6 +68,9 @@ Do not replace the factory merely because the dependency version is 2.x.
   Flutter MethodChannel or Dart/iOS API; those adapters require a separate update.
 
 ## Upgrading from 2.1 to 2.2
+
+Historical behavior below applies to 2.2–2.4. The 2.5 guidance above replaces its
+legacy companion and Direct-fulfillment requirements.
 
 - Keep the existing V1 factory, app/customer identity, credentials, cache and
   inventory ledger. The dependency upgrade does not opt a V1 client into Go.
@@ -125,7 +159,7 @@ Do not erase the user's data or start a replacement purchase as a workaround.
 | Default V1 client, old constructor without productType, market=NONE | Keeps Direct selection; does not unexpectedly open Bazaar. |
 | Default V1 client, old constructor, market=BAZAAR | Keeps Bazaar selection; uses Store V2 when the server identifies Bazaar. |
 | Explicit productType constructor | Uses the supported server route; request market is fallback when route metadata is absent. |
-| Go purchase companion | Uses the bound server route, not legacy request-level route selection. |
+| Go V2 client | Uses the verified session route; no legacy purchase companion in 2.5. |
 | Recognized unsupported server store | Fails explicitly; never silently switches store. |
 
 Unknown numeric platform values follow the legacy fallback; enum recognition
@@ -239,11 +273,10 @@ into a new customer. Legacy invalid identifiers need an explicit migration plan.
 
 Go CustomerInfo is signed, attributes are write-only, fetch policies are
 explicit and logout may remain pending offline. A Go Bearer session is not a
-Laravel JSON purchase token. Unbound commerce V2 uses the Go Bearer directly;
-an explicit purchase companion retains the legacy route and requires separately
-configured, matching credentials and rebinding after identity changes. Direct
-consumable recovery still requires that companion. The SDK does not invent a
-credential-exchange endpoint or migrate a paid journal to another credential scope.
+Laravel JSON purchase token. Commerce V2 uses the Go Bearer directly for Direct
+and native stores, including fulfillment. The old bridge is disabled in 2.5.
+Existing V1 operations must be completed with their original V1 client; no paid
+journal is automatically moved into another credential scope.
 
 See [Go integration](../V2_MIGRATION.md) for complete setup and limitations.
 

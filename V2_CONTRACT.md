@@ -3,7 +3,7 @@
 This is a code-derived implementation/acceptance checklist, not a claim that
 every device or backend integration has passed. The original design input was
 the September 2026 Go SDK V2 contract, version 1.1. The matrix includes the 2.2.0
-commerce/session integration, 2.3.0 targeting-sync extension and 2.4.0 Myket support; evidence for older releases does not certify
+commerce/session integration, 2.3.0 targeting-sync extension and 2.4.0 Myket support plus 2.5 unified session commerce; evidence for older releases does not certify
 the newer changes.
 
 Library 2.x contains two different V2 protocols: Laravel Store V2 payments and
@@ -22,13 +22,13 @@ V1-compatible factory. See the [migration guide](docs/MIGRATION.md).
 | Go identity | Stable anonymous UUID; verified session saved before publication; durable pending login/logout attempts; internal signed subject separate from public user identifier. |
 | Go resources | Four cache policies, shared refreshes, server-selected offerings/placements and write-only durable attributes. Go does not use V1 forceVersion/hasForceUpdate. |
 | 2.3 targeting sync | Additive extension on both clients: attribute upload then fresh offerings under one operation lock; rolling five-call/minute admission and warning/cache-only fallback at the limit. Missing current cache is an explicit retryable failure. Existing protocol-specific identity barriers remain unchanged. |
-| Go commerce | Unbound Direct checkout and native-store coordinator use session Bearer at the commerce V2 base; trace listeners cover both transports. |
-| Purchase companion | Explicit, scope-matched legacy credentials retain the legacy purchase/recovery route; Go Bearer tokens are never used as Laravel JSON customer tokens. |
+| Go commerce | All seven Direct/store commerce routes use current-session Bearer and omit legacy credentials/context. Only 401 SESSION_EXPIRED renews and replays once. Both transports use redacted diagnostics. |
+| Purchase companion | Deprecated and disabled in 2.5 while retaining the JVM signature. Original V1 clients retain their own recovery; no journal migration occurs. |
 | Presentation | Native package fallback, compatibility/size/depth gates, app-owned typography and payment URL allowlists. |
 | Diagnostics | Opt-in filtered bounded HTTP exchanges plus storage and signature-stage context; no raw tracing helper in the release variant. |
 
 Go defaults to `https://service.inappify.com/app/v2/`.
-Unbound commerce defaults to `https://api.inappify.com/app/v2/`.
+Commerce defaults to `https://api.inappify.com/app/v2/`.
 V1 and Laravel Store V2 routes are unchanged.
 
 ## Not implemented or not guaranteed
@@ -36,9 +36,8 @@ V1 and Laravel Store V2 routes are unchanged.
 - Myket native subscriptions and dynamic-price tokens; Play Store, Apple stores
   and other enum-only stores. Myket in-app support still needs
   live device/backend acceptance; see [Myket integration](docs/MYKET.md).
-- An automatic Go-to-Laravel credential exchange: no official bridge endpoint is
-  implemented. Legacy Direct fulfillment still needs separately configured credentials;
-  fresh unbound commerce instead uses its distinct session-Bearer contract.
+- Automatic migration of V1 paid operations or host ledgers into the Go identity
+  namespace. Recover those operations with the original V1 integration.
 - Complete rendering of arbitrary remote Paywall element/action documents.
   Unsupported documents must use the native package fallback.
 - A host inventory database or globally exactly-once fulfillment without a
@@ -51,6 +50,35 @@ The publisher must review the bundled official signing pin and its rotation
 plan. Runtime key discovery cannot establish trust in unrelated key material.
 
 ## Local evidence
+
+### 2.5.0-rc.1 unified V2 commerce — October 4, 2026
+
+Canary based on the Android purchase migration contract (document 1.1). All
+**621 JVM tests in 34 suites** pass with zero failures/errors/skips. Coverage
+includes actual local HTTP for all seven commerce paths and current Bearer/body
+contracts, secret redaction, Direct DONE/NEEDTOPAY, bounded expiry renewal,
+rejected invalid/revoked sessions, failed signature/storage during renewal,
+concurrent renewal, Login/Logout token replacement, Direct process restart and
+ACK uncertainty, account/endpoint isolation, store Retry-After after restart,
+and verification/consume-report renewal for both Bazaar and Myket. Existing V1
+regressions and store-journal tests remain enabled. Superseded legacy bridge
+behavior tests now verify explicit rejection without modifying either journal.
+
+The independent public-source build with Gradle 8.7/JDK 17 runs all 95 release
+tasks without build-cache reuse: JVM tests, release lint/AAR/sources, Maven publication metadata and
+instrumentation compilation. Lint has zero errors, 14 dependency-update suggestions
+and the existing Myket exported-receiver warning described below. Instrumentation
+and real payments have not run. Native V1 source, existing Go store journal format
+and private integration applications are unchanged.
+
+Public/protected JVM declaration/descriptor comparison outside the internal package
+with the hash-verified public 2.4.0 AAR examines 89 classes in each artifact and
+finds no removed/changed declarations. This includes retaining the deprecated
+bridge signature; its explicitly changed behavior requires host migration. The
+comparison is not comprehensive Kotlin metadata or runtime/device certification.
+
+Use this canary for staged backend/device acceptance. No claim of a successful
+real payment, production rollout or automatic Flutter protocol migration is made.
 
 ### 2.4.0 Myket integration — October 3, 2026
 

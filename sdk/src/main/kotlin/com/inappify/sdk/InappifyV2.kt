@@ -89,14 +89,11 @@ public interface InappifyV2Client : InappifyClient {
     /** Stops v2 network use without discarding verified cache; host owns rollout flags. */
     public fun setNetworkEnabled(enabled: Boolean)
     /**
-     * Explicitly selects the V1-compatible payment workflow for both Direct and Bazaar,
-     * including purchase, recovery and delivery confirmation. Without binding, new payments
-     * use the Go session bearer against Laravel V2. The client must have the same app,
-     * customer and store. Binding is rejected while matching Go store operations are pending;
-     * finish that workflow before switching routes. After an identity change, financial
-     * calls require rebinding instead of silently switching to Go commerce. Rebind after
-     * login/logout or recreate a client explicitly to select the default Go route again.
+     * Retained for binary compatibility. Always fails with LEGACY_PURCHASE_BRIDGE_REMOVED.
+     * V2 purchases and fulfillment use the current Go session directly. Complete any
+     * pre-existing V1 deliveries using their original V1 client and host ledger.
      */
+    @Deprecated("V2 commerce uses the Go session directly; keep V1 recovery on the original V1 client.")
     public suspend fun bindLegacyPurchaseClient(client: InappifyClient): InappifyResult<Unit>
 
     public companion object {

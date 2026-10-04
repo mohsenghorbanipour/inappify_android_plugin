@@ -235,6 +235,8 @@ internal class CustomerInfoVerifier(
     }
 }
 
+internal data class GoApiResponse(val body: JsonObject, val retryAfterSeconds: Long?)
+
 internal class GoApi(
     private val transport: HttpTransport,
     private val now: () -> Long,
@@ -246,6 +248,10 @@ internal class GoApi(
     @Volatile var enabled = true
     suspend fun request(endpoint: String, token: String?, body: JsonObject = JsonObject(),
         retry: Boolean = true, headers: Map<String, String> = emptyMap()): JsonObject {
+        return requestWithMetadata(endpoint, token, body, retry, headers).body
+    }
+    suspend fun requestWithMetadata(endpoint: String, token: String?, body: JsonObject = JsonObject(),
+        retry: Boolean = true, headers: Map<String, String> = emptyMap()): GoApiResponse {
         if (!enabled) fail("CONFIGURATION", "V2_DISABLED")
         val raw = body.toString()
         if (raw.toByteArray().size > 1024 * 1024) fail("VALIDATION", "BODY_TOO_LARGE")
@@ -254,6 +260,8 @@ internal class GoApi(
             val response = transport.execute(HttpRequest(endpoint, raw,
                 method = if (endpoint == "public-keys") "GET" else "POST",
                 headers = buildMap {
+                    put("Accept", "application/json")
+                    put("Content-Type", "application/json")
                     put("User-Agent", "InAppify-Android/${BuildConfig.SDK_VERSION}")
                     token?.let { put("Authorization", "Bearer $it") }
                     putAll(headers)
@@ -270,7 +278,7 @@ internal class GoApi(
                 fail(category, response.kind.name, category != "DECODING")
             }
             val http = (response as TransportResult.Response).response
-            if (http.statusCode == 204 && endpoint == "attributes") return JsonObject()
+            if (http.statusCode == 204 && endpoint == "attributes") return GoApiResponse(JsonObject(), null)
             if (http.statusCode in setOf(429, 500, 502, 503, 504) && retry && attempt < 3) {
                 sleep(retryDelay(attempt, http.headers)); return@repeat
             }
@@ -292,12 +300,25 @@ internal class GoApi(
                     else -> "SERVER"
                 }
                 fail(category, code, http.statusCode in setOf(429, 500, 502, 503, 504),
-                    http.statusCode, numericCode?.let { mapOf("errorCode" to it) } ?: emptyMap())
+                    http.statusCode, buildMap {
+                        numericCode?.let { put("errorCode", it) }
+                        retryAfterSeconds(http.headers)?.let { put("retryAfterSeconds", it) }
+                    })
             }
             if (endpoint != "public-keys" && !json.flag("status")) fail("DECODING", "INVALID_STATUS")
-            return json
+            return GoApiResponse(json, retryAfterSeconds(http.headers))
         }
         error("Unreachable")
+    }
+    private fun retryAfterSeconds(headers: Map<String, String>): Long? {
+        val value = headers.entries.firstOrNull { it.key.equals("Retry-After", true) }?.value?.trim() ?: return null
+        value.toLongOrNull()?.takeIf { it >= 0 }?.let { return it }
+        return runCatching {
+            val date = java.text.SimpleDateFormat("EEE, dd MMM yyyy HH:mm:ss zzz", java.util.Locale.US).parse(value)
+                ?: return null
+            val remaining = (date.time - now()).coerceAtLeast(0)
+            remaining / 1000 + if (remaining % 1000 == 0L) 0 else 1
+        }.getOrNull()
     }
     private fun retryDelay(attempt: Int, headers: Map<String, String>): Long {
         fun header(name: String) = headers.entries.firstOrNull { it.key.equals(name, true) }?.value

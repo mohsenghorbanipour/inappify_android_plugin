@@ -5,7 +5,6 @@ import android.content.Context
 import com.google.gson.*
 import com.inappify.sdk.*
 import com.inappify.sdk.internal.domain.InappifyDomainJsonCodec
-import com.inappify.sdk.internal.DefaultInappifyClient
 import com.inappify.sdk.internal.TargetingSyncRateLimiter
 import com.inappify.sdk.internal.StoreV2Context
 import com.inappify.sdk.internal.StoreV2Coordinator
@@ -64,18 +63,15 @@ internal class GoV2Client(
     private val verifier = CustomerInfoVerifier(config, ::trustedNow)
     private var options: InappifyOptions? = null
     private var document = JsonObject()
-    private var purchaseClient: InappifyClient? = null
-    private var legacyBindingRequired = false
     private var deliveryHandler: InappifyConsumableDeliveryHandler? = null
-    private var handlerRegistration: InappifyListenerRegistration? = null
     private var renewalFailure: V2Failure? = null
     private var nextRenewalAt = 0L
     private var detectedCountry: String? = null
     private val lifecycleLock = Any()
     private val activeOperationJobs = mutableSetOf<Job>()
     private val activeBillingAdapters = mutableSetOf<StoreBillingAdapter>()
-    private val storeCoordinator = commerceApi?.let { endpoint ->
-        StoreV2Coordinator(GoV2StoreService(endpoint, ::storeSessionToken), storage, billingFactory, now,
+    private val storeCoordinator = commerceApi?.let {
+        StoreV2Coordinator(GoV2StoreService(::commerceRequest), storage, billingFactory, now,
             registerActiveAdapter = ::registerBillingAdapter,
             unregisterActiveAdapter = { adapter -> synchronized(lifecycleLock) { activeBillingAdapters.remove(adapter) }; Unit })
     }
@@ -280,7 +276,7 @@ internal class GoV2Client(
     private fun boundSubject(): String? = document.get("customerSubject")?.asString
 
     private suspend fun configureLocked(identity: String, preservePendingLogin: Boolean = false,
-        preservePendingLogout: Boolean = pendingLogout) {
+        preservePendingLogout: Boolean = pendingLogout, retry: Boolean = true) {
         val opt = options ?: fail("CONFIGURATION", "NOT_CONFIGURED")
         val app = metadata.get()
         val country = opt.country ?: document.get("country")?.asString ?: resolveCountry()
@@ -291,7 +287,7 @@ internal class GoV2Client(
             addProperty("versionCode", app.versionCode)
             addProperty("sdkVersion", BuildConfig.SDK_VERSION)
             addProperty("country", normalizeCountry(country))
-        })
+        }, retry = retry)
         verifiedResponse("configure", mayHaveCommitted = true) {
             acceptSession(response, identity, keepLogoutPending = preservePendingLogout,
                 keepLoginPending = preservePendingLogin, configuredCountry = country)
@@ -364,7 +360,6 @@ internal class GoV2Client(
         next.remove("offerings")
         if (isAnonymous(identity)) next.addProperty("anonymousId", identity)
         commit(next)
-        if (bindingChanged) unbindPurchaseClient()
     }
 
     private suspend fun sessionRequest(endpoint: String, body: JsonObject = JsonObject(),
@@ -378,23 +373,17 @@ internal class GoV2Client(
         }
         return try { sdkApi.request(endpoint, session.string("sessionToken"), body, retry) }
         catch (e: V2Failure) {
-            if (e.sdkError.details["serverCode"] !in setOf("SESSION_REQUIRED", "SESSION_INVALID", "SESSION_EXPIRED")) throw e
+            if (e.sdkError.details["httpStatus"] != 401 || e.sdkError.details["serverCode"] != "SESSION_EXPIRED") throw e
             // The state mutex makes reconfiguration single-flight for all resource operations.
-            if (e.sdkError.details["serverCode"] == "SESSION_INVALID") {
-                commit(document.deepCopy().apply {
-                    addProperty("sessionInvalid", true)
-                    getAsJsonObject("session").remove("sessionToken")
-                })
-            }
-            renewSession(session.string("appUserId"))
+            renewSession(session.string("appUserId"), retry = false)
             sdkApi.request(endpoint, document.getAsJsonObject("session").string("sessionToken"), body, retry)
         }
     }
 
-    private suspend fun renewSession(identity: String) {
+    private suspend fun renewSession(identity: String, retry: Boolean = true) {
         if (now() < nextRenewalAt) renewalFailure?.let { throw it }
         try {
-            configureLocked(identity)
+            configureLocked(identity, retry = retry)
             renewalFailure = null; nextRenewalAt = 0
         } catch (e: V2Failure) {
             renewalFailure = e; nextRenewalAt = now() + 15000
@@ -468,7 +457,6 @@ internal class GoV2Client(
                     addProperty("attemptId", UUID.randomUUID().toString() + UUID.randomUUID().toString())
                 })
             })
-            unbindPurchaseClient()
         }
         // V2.0/V2.1 persisted the logout barrier without an attempt ID. Upgrade
         // that record before HTTP; revoked predecessors still recover anonymously.
@@ -695,60 +683,17 @@ internal class GoV2Client(
             is InappifyResult.Success -> InappifyResult.Success(isActiveEntitlement(identifier), snapshot)
         }
 
+    @Deprecated("V2 commerce uses the Go session directly.")
     override suspend fun bindLegacyPurchaseClient(client: InappifyClient): InappifyResult<Unit> = run {
-        requireSession()
-        if (client !is DefaultInappifyClient) fail("CONFIGURATION", "LARAVEL_CREDENTIAL_REQUIRED")
-        val opt = options ?: fail("CONFIGURATION", "NOT_CONFIGURED")
-        val recovery = storage.loadPendingStoreRecoveryState() ?: fail("STORAGE", "STORE_RECOVERY_UNAVAILABLE")
-        if (recovery.operations.any { it.apiKeyFingerprint == storeFingerprint(opt) &&
-                it.customerIdentifierFingerprint == digest(snapshot.appUserIdentifier.orEmpty()) &&
-                it.appIdentifier == metadata.get().packageIdentifier && it.appId == snapshot.appId })
-            fail("CONFIGURATION", "GO_PURCHASE_RECOVERY_REQUIRED")
-        val companion = client.createPurchaseCompanion()
-        try { checkPurchaseScope(companion) } catch (e: Exception) { companion.close(); throw e }
-        unbindPurchaseClient()
-        purchaseClient = companion
-        legacyBindingRequired = true
-        deliveryHandler?.let { handlerRegistration = companion.setConsumableDeliveryHandler(it) }
-    }
-    private fun checkPurchaseScope(client: InappifyClient) {
-        val candidate = client.snapshot
-        if (!candidate.isConfigured || candidate.appId != snapshot.appId || candidate.appUserIdentifier != snapshot.appUserIdentifier ||
-            candidate.storePlatform != snapshot.storePlatform) fail("CONFIGURATION", "PURCHASE_CREDENTIAL_SCOPE_MISMATCH")
-    }
-    private fun requirePurchaseClient(): InappifyClient {
-        if (!sdkApi.enabled) fail("CONFIGURATION", "V2_DISABLED")
-        requireSession()
-        requireFinancialRoute()
-        val client = purchaseClient ?: fail("CONFIGURATION", "LARAVEL_CREDENTIAL_REQUIRED")
-        checkPurchaseScope(client)
-        return client
-    }
-    private fun requireFinancialRoute() {
-        if (legacyBindingRequired && purchaseClient == null)
-            fail("CONFIGURATION", "LEGACY_PURCHASE_REBIND_REQUIRED")
-    }
-    private fun unbindPurchaseClient() {
-        handlerRegistration?.close(); handlerRegistration = null
-        purchaseClient?.close(); purchaseClient = null
+        fail("CONFIGURATION", "LEGACY_PURCHASE_BRIDGE_REMOVED")
     }
     override suspend fun purchase(request: InappifyPurchaseRequest): InappifyResult<InappifyPurchase> = purchaseInternal(null, request)
     override suspend fun purchase(activity: Activity, request: InappifyPurchaseRequest): InappifyResult<InappifyPurchase> = purchaseInternal(activity, request)
     private suspend fun purchaseInternal(activity: Activity?, request: InappifyPurchaseRequest): InappifyResult<InappifyPurchase> {
         val result = run {
             requireSession()
-            requireFinancialRoute()
             if (request.apiKey != null || request.marketKey != null || request.isLostPurchase || request.dynamicPriceToken != null)
                 fail("VALIDATION", "PURCHASE_OVERRIDE_NOT_ALLOWED")
-            // Explicit binding remains the 2.1 compatibility opt-in for the complete
-            // legacy payment workflow; never mix delivery-ID namespaces implicitly.
-            if (purchaseClient != null) {
-                val legacy = requirePurchaseClient()
-                val purchase = unwrap(if (activity == null) legacy.purchase(request) else legacy.purchase(activity, request))
-                if (purchase.url != null && !allowedUrl(purchase.url, config.paymentHosts))
-                    fail("DECODING", "UNTRUSTED_PAYMENT_URL", diagnostics = mapOf("outcomeMayHaveCommitted" to true))
-                return@run purchase
-            }
             // A paid attempt owns its persisted offering/product binding. Catalog refreshes
             // may remove that product, but must never force the caller to pay again.
             if (nativeStoreMarket(snapshot.storePlatform) != null && request.idempotencyKey != null) {
@@ -781,22 +726,15 @@ internal class GoV2Client(
             fail("VALIDATION", "PURCHASE_OVERRIDE_NOT_ALLOWED")
         if (request.idempotencyKey != null && !request.idempotencyKey.matches(Regex("[A-Za-z0-9_.:-]{1,128}")))
             fail("VALIDATION", "PURCHASE_ATTEMPT_INVALID")
-        val purchaseApi = commerceApi ?: fail("CONFIGURATION", "LARAVEL_V2_NOT_CONFIGURED")
-        var session = document.getAsJsonObject("session") ?: fail("CONFIGURATION", "NOT_CONFIGURED")
-        if (document.get("sessionInvalid")?.asBoolean == true || isoMillis(session.string("sessionExpiresAt")) <= now()) {
-            renewSession(session.string("appUserId"))
-            session = document.getAsJsonObject("session")
-        }
-        if (snapshot.storePlatform != "DirectAndroid") fail("CONFIGURATION", "PURCHASE_ROUTE_CHANGED")
         val response = try {
-            // Payment creation has no idempotency key on Laravel; never automatically retry it.
-            purchaseApi.request("purchase", session.string("sessionToken"), JsonObject().apply {
+            // Only an explicit SESSION_EXPIRED rejection permits one authenticated replay.
+            commerceRequest("purchase", JsonObject().apply {
                 addProperty("productIdentifier", request.productIdentifier)
                 addProperty("offeringIdentifier", request.offeringIdentifier)
                 addProperty("isCrypto", request.isCrypto)
                 request.paywallId?.let { addProperty("paywallId", it) }
                 request.paywallRevision?.let { addProperty("paywallRevision", it) }
-            }, retry = false)
+            }).body
         } catch (e: V2Failure) {
             val category = e.sdkError.details["category"]
             val status = e.sdkError.details["httpStatus"] as? Int
@@ -822,22 +760,37 @@ internal class GoV2Client(
             request.productIdentifier, request.offeringIdentifier, InappifyMarket.NONE, status,
             packageIdentifier, url)
     }
-    private suspend fun storeSessionToken(): String {
+    /** Called only under the state mutex: renewal, verification, persistence and replay are single-flight. */
+    private suspend fun commerceRequest(endpoint: String, body: JsonObject): GoApiResponse {
+        val api = commerceApi ?: fail("CONFIGURATION", "LARAVEL_V2_NOT_CONFIGURED")
+        val expectedStore = snapshot.storePlatform
+        val token = commerceSessionToken()
+        return try { api.requestWithMetadata(endpoint, token, body, retry = false) }
+        catch (failure: V2Failure) {
+            if (failure.sdkError.details["httpStatus"] != 401 ||
+                failure.sdkError.details["serverCode"] != "SESSION_EXPIRED") throw failure
+            val identity = document.getAsJsonObject("session").string("appUserId")
+            renewSession(identity, retry = false)
+            if (snapshot.storePlatform != expectedStore) fail("CONFIGURATION", "PURCHASE_ROUTE_CHANGED")
+            api.requestWithMetadata(endpoint, commerceSessionToken(), body, retry = false)
+        }
+    }
+    private suspend fun commerceSessionToken(): String {
         if (closed) throw CancellationException("The Inappify client is closed.")
         if (!sdkApi.enabled || commerceApi?.enabled == false) fail("CONFIGURATION", "V2_DISABLED")
         requireSession()
         val expectedStore = snapshot.storePlatform
         var session = document.getAsJsonObject("session") ?: fail("CONFIGURATION", "NOT_CONFIGURED")
         if (document.get("sessionInvalid")?.asBoolean == true || isoMillis(session.string("sessionExpiresAt")) <= now()) {
-            renewSession(session.string("appUserId"))
+            renewSession(session.string("appUserId"), retry = false)
             session = document.getAsJsonObject("session") ?: fail("CONFIGURATION", "NOT_CONFIGURED")
         }
-        if (nativeStoreMarket(snapshot.storePlatform) == null || snapshot.storePlatform != expectedStore) fail("CONFIGURATION", "PURCHASE_ROUTE_CHANGED")
+        if (snapshot.storePlatform != expectedStore) fail("CONFIGURATION", "PURCHASE_ROUTE_CHANGED")
         return session.string("sessionToken")
     }
     private suspend fun storeContext(): StoreV2Context {
         val opt = options ?: fail("CONFIGURATION", "NOT_CONFIGURED")
-        val token = storeSessionToken()
+        val token = commerceSessionToken()
         val session = document.getAsJsonObject("session") ?: fail("CONFIGURATION", "NOT_CONFIGURED")
         val market = nativeStoreMarket(snapshot.storePlatform) ?: fail("CONFIGURATION", "UNSUPPORTED_STORE_PLATFORM")
         if ((market == InappifyMarket.MYKET || opt.market == InappifyMarket.MYKET) &&
@@ -1191,10 +1144,139 @@ internal class GoV2Client(
         firstError?.let { throw V2Failure(it) }
         return InappifyConsumableSyncResult(operations.size + reconciledCompleted, completed, pending)
     }
+    private class DirectReconciliation(val result: InappifyConsumableSyncResult, val purchases: List<InappifyPurchase>)
+
+    // These checkpoints live inside the encrypted, signed-identity-bound Go document.
+    // They never modify or import the V1/store purchase journal. Endpoint changes cannot replay them.
+    private fun directRecords(): JsonObject {
+        val saved = document.getAsJsonObject("directDeliveries") ?: return JsonObject()
+        val opt = options ?: fail("CONFIGURATION", "NOT_CONFIGURED")
+        return if (saved.string("endpoint") == storeFingerprint(opt)) saved.getAsJsonObject("records").deepCopy()
+            else JsonObject()
+    }
+    private suspend fun saveDirectRecords(records: JsonObject) {
+        val opt = options ?: fail("CONFIGURATION", "NOT_CONFIGURED")
+        // Keep pending acknowledgements; retain a bounded terminal cache for idempotent confirms.
+        records.entrySet().filter { it.value.asJsonObject.getAsJsonObject("delivery").string("status") == "COMPLETED" }
+            .dropLast(128).map { it.key }.forEach(records::remove)
+        commit(document.deepCopy().apply {
+            add("directDeliveries", JsonObject().apply {
+                addProperty("endpoint", storeFingerprint(opt)); add("records", records)
+            })
+        })
+    }
+    private suspend fun syncDirectConsumables(): DirectReconciliation {
+        requireSession()
+        if (snapshot.storePlatform != "DirectAndroid") fail("CONFIGURATION", "PURCHASE_ROUTE_CHANGED")
+        val discovered = linkedMapOf<Long, GoV2DirectDelivery>()
+        val pending = linkedMapOf<Long, InappifyConsumableDelivery>()
+        val completed = mutableSetOf<Long>()
+        val purchases = linkedMapOf<Long, InappifyPurchase>()
+        val handled = mutableSetOf<Long>()
+        var firstError: V2Failure? = null
+        // A previous ACK may have committed even when pending no longer lists it.
+        // Resume only host-granted records of this verified identity and commerce endpoint.
+        for ((_, record) in directRecords().entrySet()) {
+            val saved = record.asJsonObject
+            val delivery = GoV2DirectDelivery(saved.getAsJsonObject("delivery"))
+            if (delivery.completed || !saved.flag("hostDelivered")) continue
+            discovered[delivery.id] = delivery
+            pending[delivery.id] = delivery.publicDelivery()
+            handled += delivery.id
+            try {
+                purchases[delivery.id] = confirmDirectDelivery(delivery.id)
+                pending.remove(delivery.id); completed += delivery.id
+            } catch (failure: V2Failure) { if (firstError == null) firstError = failure }
+        }
+        for (batch in 0 until 100) {
+            val response = commerceRequest("consumable-deliveries/pending", JsonObject()).body
+            val elements = response.getAsJsonObject("data")?.get("deliveries")
+                ?.takeIf { it.isJsonArray }?.asJsonArray ?: fail("DECODING", "INVALID_DIRECT_DELIVERIES")
+            val deliveries = elements.map { element ->
+                if (!element.isJsonObject) fail("DECODING", "INVALID_DIRECT_DELIVERY")
+                GoV2DirectDelivery(element.asJsonObject)
+            }
+            if (deliveries.map { it.id }.toSet().size != deliveries.size) fail("DECODING", "DUPLICATE_DELIVERY_ID")
+            val records = directRecords()
+            val fresh = deliveries.count { !discovered.containsKey(it.id) }
+            for (delivery in deliveries) {
+                val previous = records.getAsJsonObject(delivery.id.toString())
+                previous?.getAsJsonObject("delivery")?.let { saved ->
+                    if (GoV2DirectDelivery(saved).product != delivery.product ||
+                        GoV2DirectDelivery(saved).transaction != delivery.transaction)
+                        fail("DECODING", "DELIVERY_SCOPE_MISMATCH")
+                    if (GoV2DirectDelivery(saved).completed && !delivery.completed)
+                        fail("DECODING", "DELIVERY_STATE_REGRESSION")
+                }
+                records.add(delivery.id.toString(), JsonObject().apply {
+                    add("delivery", delivery.json.deepCopy())
+                    addProperty("hostDelivered", previous?.get("hostDelivered")?.asBoolean == true)
+                })
+            }
+            if (deliveries.isNotEmpty()) saveDirectRecords(records)
+            var progress = false
+            for (delivery in deliveries) {
+                discovered[delivery.id] = delivery
+                purchases[delivery.id] = delivery.purchase()
+                if (delivery.completed) {
+                    completed += delivery.id; pending.remove(delivery.id); continue
+                }
+                pending[delivery.id] = delivery.publicDelivery()
+                if (!handled.add(delivery.id)) continue
+                var granted = records.getAsJsonObject(delivery.id.toString()).get("hostDelivered").asBoolean
+                val handler = deliveryHandler
+                if (!granted && handler != null) granted = withContext(Dispatchers.IO) {
+                    try { handler.deliver(delivery.publicDelivery()) == InappifyDeliveryResult.DELIVERED }
+                    catch (cancelled: CancellationException) { throw cancelled }
+                    catch (_: Exception) { false }
+                }
+                if (granted) try {
+                    purchases[delivery.id] = confirmDirectDelivery(delivery.id)
+                    pending.remove(delivery.id); completed += delivery.id; progress = true
+                } catch (failure: V2Failure) { if (firstError == null) firstError = failure }
+            }
+            if (firstError != null || deliveries.size < 100 || !progress || fresh == 0) break
+        }
+        firstError?.let { throw it }
+        return DirectReconciliation(InappifyConsumableSyncResult(discovered.size, completed.size, pending.values.toList()),
+            purchases.values.toList())
+    }
+    private suspend fun confirmDirectDelivery(deliveryId: Long): InappifyPurchase {
+        requireSession()
+        if (!sdkApi.enabled || commerceApi?.enabled == false) fail("CONFIGURATION", "V2_DISABLED")
+        val records = directRecords()
+        val record = records.getAsJsonObject(deliveryId.toString()) ?: fail("VALIDATION", "DELIVERY_NOT_FOUND")
+        val expected = GoV2DirectDelivery(record.getAsJsonObject("delivery"))
+        if (expected.completed) return expected.purchase()
+        // The public confirm API is the host's durable-grant assertion. Persist before HTTP
+        // so a timeout/process restart retries acknowledgement without calling the handler again.
+        record.addProperty("hostDelivered", true)
+        saveDirectRecords(records)
+        val delivered = try {
+            val response = commerceRequest("consumable-deliveries/$deliveryId/delivered", JsonObject()).body
+            val data = response.get("data")?.takeIf { it.isJsonObject }?.asJsonObject
+                ?: fail("DECODING", "INVALID_DIRECT_DELIVERY")
+            GoV2DirectDelivery(data).also {
+                if (it.id != deliveryId || it.product != expected.product ||
+                    it.transaction != expected.transaction || !it.completed)
+                    fail("DECODING", "DELIVERY_SCOPE_MISMATCH")
+            }
+        } catch (failure: V2Failure) {
+            val error = failure.sdkError
+            val uncertain = error.details["category"] in setOf("NETWORK", "TIMEOUT", "DECODING") ||
+                (error.details["httpStatus"] as? Int)?.let { it >= 500 } == true
+            if (!uncertain) throw failure
+            throw V2Failure(InappifyError(error.code, error.message, error.isRetryable,
+                error.details + mapOf("outcomeMayHaveCommitted" to true)))
+        }
+        record.add("delivery", delivered.json.deepCopy())
+        saveDirectRecords(records)
+        return delivered.purchase()
+    }
     override suspend fun syncPurchases(): InappifyResult<List<InappifyPurchase>> {
         val result = run {
-            requireFinancialRoute()
-            if (purchaseClient != null || snapshot.storePlatform == "DirectAndroid") unwrap(requirePurchaseClient().syncPurchases())
+            requireSession()
+            if (snapshot.storePlatform == "DirectAndroid") syncDirectConsumables().purchases
             else reconcileStorePurchases(queryOwned = true, explicitRestore = false).let {
                 it.error?.let { error -> throw V2Failure(error) }
                 it.purchases
@@ -1205,8 +1287,10 @@ internal class GoV2Client(
     }
     override suspend fun restorePurchasesV2(): InappifyResult<InappifyRestoreResult> {
         val result = run {
-            requireFinancialRoute()
-            if (purchaseClient != null || snapshot.storePlatform == "DirectAndroid") unwrap(requirePurchaseClient().restorePurchases())
+            requireSession()
+            if (snapshot.storePlatform == "DirectAndroid") syncDirectConsumables().let {
+                InappifyRestoreResult(it.result.completedCount, 0, 0)
+            }
             else reconcileStorePurchases(queryOwned = true, explicitRestore = true).let {
                 it.error?.let { error -> throw V2Failure(error) }
                 it.restoreResult
@@ -1217,10 +1301,9 @@ internal class GoV2Client(
     }
     override suspend fun confirmDeliveryV2(deliveryId: Long): InappifyResult<InappifyPurchase> {
         val result = run {
-            requireFinancialRoute()
+            requireSession()
             if (deliveryId <= 0) fail("VALIDATION", "INVALID_DELIVERY_ID")
-            if (purchaseClient != null || snapshot.storePlatform == "DirectAndroid")
-                return@run unwrap(requirePurchaseClient().confirmDelivery(deliveryId))
+            if (snapshot.storePlatform == "DirectAndroid") return@run confirmDirectDelivery(deliveryId)
             if (nativeStoreMarket(snapshot.storePlatform) == null) fail("CONFIGURATION", "UNSUPPORTED_STORE_PLATFORM")
             val coordinator = storeCoordinator ?: fail("CONFIGURATION", "LARAVEL_V2_NOT_CONFIGURED")
             val context = storeContext()
@@ -1239,8 +1322,8 @@ internal class GoV2Client(
     override suspend fun syncPendingConsumablesInternal(): InappifyResult<InappifyConsumableSyncResult> {
         val result = shared("consumables:${snapshot.appUserIdentifier}") {
             run {
-                requireFinancialRoute()
-                if (purchaseClient != null || snapshot.storePlatform == "DirectAndroid") unwrap(requirePurchaseClient().syncPendingConsumables())
+                requireSession()
+                if (snapshot.storePlatform == "DirectAndroid") syncDirectConsumables().result
                 else syncStoreConsumables()
             }
         }
@@ -1250,13 +1333,9 @@ internal class GoV2Client(
     override fun setConsumableDeliveryHandlerInternal(handler: InappifyConsumableDeliveryHandler): InappifyListenerRegistration {
         check(!closed)
         deliveryHandler = handler
-        handlerRegistration?.close()
-        handlerRegistration = purchaseClient?.setConsumableDeliveryHandler(handler)
         return InappifyListenerRegistration.create(Runnable {
             if (deliveryHandler === handler) {
                 deliveryHandler = null
-                handlerRegistration?.close()
-                handlerRegistration = null
             }
         })
     }
@@ -1270,7 +1349,7 @@ internal class GoV2Client(
         if (info is InappifyResult.Failure) return@shared info
         val offerings = refreshOfferings()
         if (offerings is InappifyResult.Failure) return@shared offerings
-        if (nativeStoreMarket(snapshot.storePlatform) != null || purchaseClient != null) {
+        if (nativeStoreMarket(snapshot.storePlatform) != null || snapshot.storePlatform == "DirectAndroid") {
             val sync = syncPendingConsumables()
             if (sync is InappifyResult.Failure) return@shared sync
         }
@@ -1301,7 +1380,7 @@ internal class GoV2Client(
         }
         resources.first.forEach { it.cancel(CancellationException("The Inappify client is closed.")) }
         resources.second.forEach { runCatching { it.close() } }
-        scope.cancel(); sdkApi.close(); commerceApi?.close(); listeners.clear(); unbindPurchaseClient()
+        scope.cancel(); sdkApi.close(); commerceApi?.close(); listeners.clear(); deliveryHandler = null
     }
     private fun requireSession() {
         if (!snapshot.isConfigured || pendingLogout || pendingLogin)
@@ -1385,10 +1464,7 @@ internal class GoV2Client(
         .digest(value.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
     private fun trustedNow(): Long = maxOf(now(), trustedTimeFloor +
         ((System.nanoTime() - timeAnchorNanos).coerceAtLeast(0) / 1_000_000))
-    private fun <T> unwrap(result: InappifyResult<T>): T = when (result) {
-        is InappifyResult.Success -> result.data
-        is InappifyResult.Failure -> throw V2Failure(result.error)
-    }
+
     private fun <T> InappifyResult<T>.withSnapshot(): InappifyResult<T> = when (this) {
         is InappifyResult.Success -> InappifyResult.Success(data, this@GoV2Client.snapshot)
         is InappifyResult.Failure -> InappifyResult.Failure(error, this@GoV2Client.snapshot)

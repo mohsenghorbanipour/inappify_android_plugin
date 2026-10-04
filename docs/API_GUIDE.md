@@ -142,7 +142,7 @@ transitions can establish a new binding.
 Identity transitions serialize with mutations/fulfillment. Go uncertain login and offline logout
 persists a pending intent and hides the prior user; recovery must complete that
 logout before treating a session as active. Cache/queued attributes are
-identity-scoped. Rebind the legacy purchase companion after identity changes.
+identity-scoped. V2 commerce reads the accepted current session; no companion is bound.
 
 Logout does not destroy recoverable marketplace evidence. A different identity
 cannot replay that evidence. The host must independently scope its inventory
@@ -283,9 +283,9 @@ without this optional capability return `UNSUPPORTED_OPERATION`.
 `validateDiscountCode(InappifyDiscountCodeRequest(...))` performs validation.
 Inspect the returned business result; a completed HTTP request does not make a
 discount valid. Do not reuse dynamic price tokens across unrelated purchases.
-Unbound Go Direct/Bazaar checkout rejects `discount` and `discountCode`; validation
-does not imply support for applying them. An explicitly bound legacy companion
-retains its legacy discount behavior.
+Go Direct/Bazaar/Myket checkout rejects `discount` and `discountCode`; validation
+does not imply support for applying them. V1 retains its legacy discount behavior.
+The Go legacy purchase bridge is disabled in 2.5.
 
 ## Purchase routes, results and fulfillment
 

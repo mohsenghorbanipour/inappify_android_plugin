@@ -365,95 +365,70 @@ class GoCommerceRegressionTest(private val nativeMarket: InappifyMarket) {
             assertTrue(commerceTransport.listeners.isEmpty())
         }
     }
-    @Test fun boundDirectDeliveryStillUsesItsMatchingLegacyCompanion() = runBlocking {
-        platform = 2
-        var confirmationToken: String? = null
-        val legacyBase = LegacyPurchaseFixtureService()
-        val service = object : InappifyService by legacyBase {
-            override suspend fun markDirectConsumableDelivered(request: DirectConsumableDeliveryApiRequest): ConsumableDeliveriesServiceResult {
-                confirmationToken = request.token
-                return ConsumableDeliveriesServiceResult.Response(200, ConsumableDeliveriesBackendResponse(true,
-                    listOf(BackendConsumableDelivery(request.deliveryId, StorePurchaseStatus.COMPLETED,
-                        ConsumableDeliverySource.DIRECT, null, null, "product", true, null)), null, null), null)
-            }
-        }
-        DefaultInappifyClient(service, MemoryV2Store(), metadata, "2.1.0").use { legacy ->
-            assertTrue(legacy.configure(InappifyOptions("legacy-fixture-key", signing.subject)) is InappifyResult.Success)
+    @Test fun storeVerificationAndConsumeReportRenewExpiredSessionWithoutNewBillingPurchase() = runBlocking {
+        for (phase in listOf(PendingStoreOperationPhase.VERIFYING, PendingStoreOperationPhase.CONSUME_RESULT_REPORTING)) {
+            storage.value = null
             client().use { sdk ->
                 configured(sdk)
-                assertTrue(sdk.bindLegacyPurchaseClient(legacy) is InappifyResult.Success)
-                assertTrue(sdk.purchase(InappifyPurchaseRequest("product", "default")) is InappifyResult.Success)
-                assertEquals("legacy-token-A", legacyBase.lastPurchase!!.token)
-                val result = sdk.confirmDelivery(7)
-                assertTrue(result is InappifyResult.Success)
-                assertEquals("legacy-token-A", confirmationToken)
-                assertTrue(commerceTransport.requests.isEmpty())
-            }
-        }
-    }
-    @Test fun explicitlyBoundStorePreservesLegacyPaidAttemptAndDeliveryRoute() = runBlocking {
-        var confirmedWithToken: String? = null
-        val legacyStorage = CommerceStore()
-        val base = LegacyPurchaseFixtureService()
-        fun response() = ServiceResult.Response(200, BackendResponse(true, null, null, "legacy-token-A",
-            signing.subject, """{"originalAppUserId":"${signing.subject}"}""", "fixture-public-rsa", 12, 4,
-            offeringsJson = base.offerings, storePlatform = if (nativeMarket == InappifyMarket.MYKET) "MyKet" else "Bazar"), null)
-        val service = object : InappifyService by base {
-            override suspend fun configure(request: ConfigureApiRequest): ServiceResult = response()
-            override suspend fun getCustomerInfo(request: ResourceApiRequest): ServiceResult = response()
-            override suspend fun getOfferings(request: ResourceApiRequest): ServiceResult = response()
-            override suspend fun markStoreDeliveryDelivered(request: StoreDeliveryApiRequest): StoreServiceResult {
-                confirmedWithToken = request.token
-                return StoreServiceResult.Failure(ServiceFailureKind.NETWORK)
-            }
-        }
-        DefaultInappifyClient(service, legacyStorage, metadata, "2.1.0").use { legacy ->
-            assertTrue(legacy.configure(InappifyOptions("legacy-fixture-key", signing.subject,
-                market = nativeMarket, marketKey = "fixture-public-rsa")) is InappifyResult.Success)
-            client().use { sdk ->
-                configured(sdk)
-                legacyStorage.upsertPendingStoreOperation(pending().copy(
-                    apiKeyFingerprint = legacyStorage.value!!.apiKeyFingerprint!!,
-                    offeringIdentifier = "default"))
-                assertTrue(sdk.bindLegacyPurchaseClient(legacy) is InappifyResult.Success)
-                assertTrue(sdk.purchase(InappifyPurchaseRequest("product", "default",
-                    productType = InappifyProductType.CONSUMABLE, idempotencyKey = "attempt-1")) is InappifyResult.Success)
-                assertTrue(sdk.confirmDelivery(7) is InappifyResult.Failure)
-                assertEquals("legacy-token-A", confirmedWithToken)
-                assertTrue(commerceTransport.requests.isEmpty())
+                sdkTransport.requests.clear(); commerceTransport.requests.clear()
+                storage.upsertPendingStoreOperation(pending(type = if (phase == PendingStoreOperationPhase.VERIFYING) PendingStoreProductType.NON_CONSUMABLE else PendingStoreProductType.CONSUMABLE).copy(phase = phase,
+                    verificationRequestId = if (phase == PendingStoreOperationPhase.VERIFYING) 9 else null,
+                    deliveryAcknowledged = phase == PendingStoreOperationPhase.CONSUME_RESULT_REPORTING,
+                    consumeResult = if (phase == PendingStoreOperationPhase.CONSUME_RESULT_REPORTING) PendingStoreConsumeResult.SUCCEEDED else null))
+                val base = sdkTransport.handler
+                sdkTransport.handler = { request -> if (request.path == "configure") sdkTransport.response(signing.envelope().apply {
+                    addProperty("storePlatform", platform); addProperty("sessionToken", "renewed-session"); addProperty("storeInfo", "fixture-public-rsa")
+                }) else base(request) }
+                commerceTransport.handler = {
+                    if (commerceTransport.requests.size == 1) TransportResult.Response(HttpResponse(401,
+                        """{"status":false,"code":"SESSION_EXPIRED"}""", null))
+                    else commerceTransport.response(jsonObject("""{"status":true,"data":{"status":"COMPLETED"}}"""))
+                }
+                assertTrue(sdk.syncPendingConsumables() is InappifyResult.Success)
+                assertEquals(1, sdkTransport.requests.count { it.path == "configure" })
+                assertEquals(listOf("Bearer go-session-token", "Bearer renewed-session"), commerceTransport.requests.map { it.headers["Authorization"] })
+                assertEquals(commerceTransport.requests[0].jsonBody, commerceTransport.requests[1].jsonBody)
+                assertTrue(commerceTransport.requests.all { if (phase == PendingStoreOperationPhase.VERIFYING) it.path == "store/verifications/9/status" else it.path == "store/deliveries/7/consume-result" })
                 assertTrue(storage.operations.isEmpty())
             }
         }
     }
-    @Test fun cannotSwitchToLegacyRouteWhileGoPurchaseIsPending() = runBlocking {
-        platform = 2
-        DefaultInappifyClient(LegacyPurchaseFixtureService(), MemoryV2Store(), metadata, "2.1.0").use { legacy ->
-            assertTrue(legacy.configure(InappifyOptions("legacy-fixture-key", signing.subject)) is InappifyResult.Success)
-            client().use { sdk ->
-                configured(sdk)
-                storage.upsertPendingStoreOperation(pending())
-                val result = sdk.bindLegacyPurchaseClient(legacy) as InappifyResult.Failure
-                assertEquals("GO_PURCHASE_RECOVERY_REQUIRED", result.error.details["serverCode"])
-                assertEquals(1, storage.operations.size)
-            }
+    @Test fun verificationRetryAfterPreventsImmediatePollAfterRestart() = runBlocking {
+        client().use { sdk ->
+            configured(sdk)
+            storage.upsertPendingStoreOperation(pending().copy(phase = PendingStoreOperationPhase.VERIFYING, verificationRequestId = 9))
+            commerceTransport.handler = { TransportResult.Response(HttpResponse(200,
+                """{"status":true,"data":{"status":"PROCESSING","verificationRequestId":9,"retryAfter":1}}""", null,
+                headers = mapOf("Retry-After" to "120"))) }
+            sdk.syncPendingConsumables()
+            assertEquals(1, commerceTransport.requests.size)
+            assertTrue(requireNotNull(storage.operations.single().nextRetryAtEpochMillis) >= signing.now + 120000)
+        }
+        commerceTransport.requests.clear()
+        client().use { sdk ->
+            configured(sdk); sdk.syncPendingConsumables()
+            assertTrue(commerceTransport.requests.isEmpty())
+            assertEquals(1, storage.operations.size)
         }
     }
-    @Test fun identityChangeCannotSilentlyMoveBoundLegacyPaymentsToGoCommerce() = runBlocking {
-        platform = 2
-        DefaultInappifyClient(LegacyPurchaseFixtureService(), MemoryV2Store(), metadata, "2.1.0").use { legacy ->
+    @Suppress("DEPRECATION")
+    @Test fun deprecatedBridgeRejectsCredentialsWithoutChangingEitherPendingJournal() = runBlocking {
+        val legacyStorage = CommerceStore()
+        DefaultInappifyClient(LegacyPurchaseFixtureService(), legacyStorage, metadata, "2.1.0").use { legacy ->
             assertTrue(legacy.configure(InappifyOptions("legacy-fixture-key", signing.subject)) is InappifyResult.Success)
             client().use { sdk ->
                 configured(sdk)
-                assertTrue(sdk.bindLegacyPurchaseClient(legacy) is InappifyResult.Success)
-                val oldHandler = sdkTransport.handler
-                sdkTransport.handler = { request -> if (request.path == "login")
-                    sdkTransport.response(signing.envelope("customer_other_123456")) else oldHandler(request) }
-                assertTrue(sdk.login(InappifyLoginRequest("public-fixture-key", "customer_other_123456")) is InappifyResult.Success)
-                val results = listOf(sdk.purchase(InappifyPurchaseRequest("product", "original")),
-                    sdk.confirmDelivery(7), sdk.syncPurchases(), sdk.restorePurchases(), sdk.syncPendingConsumables())
-                results.forEach { result ->
-                    assertEquals("LEGACY_PURCHASE_REBIND_REQUIRED", (result as InappifyResult.Failure).error.details["serverCode"])
-                }
+                val goPending = pending()
+                val legacyPending = pending().copy(apiKeyFingerprint = legacyStorage.value!!.apiKeyFingerprint!!)
+                storage.upsertPendingStoreOperation(goPending)
+                legacyStorage.upsertPendingStoreOperation(legacyPending)
+                val beforeLegacy = legacy.snapshot
+                val result = sdk.bindLegacyPurchaseClient(legacy) as InappifyResult.Failure
+                assertEquals("LEGACY_PURCHASE_BRIDGE_REMOVED", result.error.details["serverCode"])
+                assertEquals(listOf(goPending), storage.operations)
+                assertEquals(listOf(legacyPending), legacyStorage.operations)
+                assertEquals(beforeLegacy.revision, legacy.snapshot.revision)
+                assertEquals(beforeLegacy.appUserIdentifier, legacy.snapshot.appUserIdentifier)
                 assertTrue(commerceTransport.requests.isEmpty())
             }
         }

@@ -7,7 +7,14 @@
 Native Android SDK for Inappify purchases, customer information, offerings,
 entitlements, discount codes, and customer attributes.
 
-Version **2.4.0** adds Myket in-app purchases alongside Bazaar.
+Version **2.5.0-rc.1** is a canary for the unified Go-session commerce contract:
+all V2 purchase and fulfillment requests use the current session Bearer, with no
+legacy API-key/customer-token fields in their bodies. Direct fulfillment is now
+native to V2, and the old credential bridge is deprecated and disabled.
+See [2.4 → 2.5 migration](docs/MIGRATION.md#upgrading-from-24-to-25).
+Live device/backend acceptance is still required before broad rollout.
+
+Version 2.4.0 added Myket in-app purchases alongside Bazaar.
 See [Myket setup and limits](docs/MYKET.md) and
 [2.3 → 2.4 migration](docs/MIGRATION.md#upgrading-from-23-to-24).
 
@@ -15,7 +22,8 @@ Version 2.3.0 added `syncAttributesAndOfferingsIfNeeded()` for ordered attribute
 upload and fresh targeting offerings, with a five-calls-per-minute cache fallback.
 See the [targeting sync contract](docs/API_GUIDE.md#sync-attributes-then-fetch-targeted-offerings).
 Version 2.2.0 added native Go session-Bearer commerce, durable login/logout recovery,
-and compatibility safeguards for existing V1 and explicitly bound legacy clients.
+and compatibility safeguards for existing V1 clients. The legacy bridge used in
+2.2–2.4 is disabled in 2.5; complete old V1 operations with the original V1 client.
 Review the [2.1 → 2.2 migration notes](docs/MIGRATION.md#upgrading-from-21-to-22)
 before enabling the new Go payment route.
 
@@ -32,12 +40,12 @@ The Go SDK v2 protocol is an **explicit opt-in** through
 `InappifyV2Client.create(context)`, followed by `configure(InappifyOptions(apiKey))`.
 The SDK bundles official service trust and resolves app/project scope from the
 verified response. The explicit-configuration overload remains available. It uses signed CustomerInfo
-and bearer sessions, independently of the Laravel store v2 described below.
+and one Bearer session shared by Go resources and Laravel V2 commerce.
 See [the migration guide](V2_MIGRATION.md) and [acceptance matrix](V2_CONTRACT.md).
 The original `InappifyClient.create(context)` continues to use V1.
-The Go integration in 2.2.0 adds session-Bearer commerce; legacy Direct
-fulfillment still needs a matching companion. The full remote Paywall schema and staging/device acceptance
-are still required before production rollout.
+Direct, Bazaar and Myket commerce use that same session. No legacy purchase
+companion is required or accepted. Full remote Paywall rendering remains outside
+the supported fallback; staging/device acceptance is required before broad rollout.
 
 ## Documentation
 
@@ -46,7 +54,7 @@ are still required before production rollout.
 - [V1 → V2 migration hints](docs/MIGRATION.md): what to keep, what to change,
   routing examples, retries, and upgrade acceptance.
 - [Go V2 integration](V2_MIGRATION.md): signed sessions, fetch policies,
-  write-only attributes, commerce endpoints and legacy fulfillment compatibility.
+  write-only attributes, commerce endpoints and migration of existing integrations.
 - [Release scope and limitations](V2_CONTRACT.md).
 - [Changelog](CHANGELOG.md) and [release verification checklist](docs/RELEASING.md).
 
@@ -108,7 +116,7 @@ Add the versioned library module:
 dependencies {
     implementation(
         "com.github.mohsenghorbanipour:" +
-            "inappify_android_plugin:v2.4.0",
+            "inappify_android_plugin:v2.5.0-rc.1",
     )
 }
 ```
@@ -158,7 +166,7 @@ when (result) {
 ```
 
 The server-provided `storePlatform` is authoritative for explicitly typed V2
-requests, Go purchase companions, and recovery. Named values are accepted
+requests, Go clients, and recovery. Named values are accepted
 directly and numeric values use the following backend enum mapping:
 
 | Value | Canonical name | Android SDK V2 status |

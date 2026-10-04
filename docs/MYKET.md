@@ -29,9 +29,8 @@ val configured = client.configure(
 The Inappify backend must return `storePlatform=11` (`MyKet`) for this app/session
 and support Myket verification, delivery and consume reporting on its existing
 Store V2 endpoints. The SDK does not configure backend credentials. Default V1
-continues using its existing Laravel authentication; unbound Go commerce uses
-its session Bearer. Explicit Go legacy binding retains the matched companion
-route. No new endpoint or Myket-specific wire field has been invented: the
+continues using its existing Laravel authentication; Go V2 commerce and
+fulfillment use the current Go session Bearer. The legacy bridge is disabled in 2.5. No new endpoint or Myket-specific wire field has been invented: the
 backend selects the store from the authenticated app/session.
 
 Explicitly selecting Bazaar with a Myket route, or Myket with a Bazaar route,

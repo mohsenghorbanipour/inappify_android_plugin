@@ -3,6 +3,30 @@
 Library versions are independent of the V1, Laravel Store V2 and Go V2 HTTP
 protocols. See the [upgrade guide](docs/MIGRATION.md) before changing factories.
 
+## [2.5.0-rc.1] - 2026-10-04
+
+Canary release of the unified V2 commerce contract; live device/backend acceptance
+remains required before broad rollout.
+
+- Route all seven Go V2 Direct/store commerce endpoints through the current Go
+  session Bearer. Keep legacy credentials and context out of commerce bodies;
+  preserve nested store receipt tokens and the unchanged V1 client/protocol.
+- Deprecate and disable `bindLegacyPurchaseClient` while preserving its JVM
+  signature. It returns `LEGACY_PURCHASE_BRIDGE_REMOVED`; old V1 operations must
+  recover with their original client, credentials and host ledger.
+- Add Direct pending-delivery discovery, durable host-grant checkpoints and scoped,
+  idempotent acknowledgement recovery across restarts. Direct and store delivery
+  routes remain separate; the existing store journal format is unchanged.
+- Renew only for HTTP 401 `SESSION_EXPIRED`, verify and atomically save the signed
+  Configure response, then replay once. Do not renew for missing/invalid/revoked
+  sessions or repeat payment creation after transport uncertainty.
+- Honor HTTP `Retry-After` in durable store backoff, alongside body `retryAfter`.
+- Verification: 621 JVM tests in 34 suites pass; release lint has zero errors
+  and the existing Myket receiver warning plus 14 dependency-update suggestions.
+  A bounded JVM comparison retains all examined public/protected declarations
+  from 2.4.0. Device/backend acceptance remains pending.
+- See [migration requirements](docs/MIGRATION.md#upgrading-from-24-to-25).
+
 ## [2.4.0] - 2026-10-03
 
 - Add `InappifyMarket.MYKET` for consumable and non-consumable purchases on the
