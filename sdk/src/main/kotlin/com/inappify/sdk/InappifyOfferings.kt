@@ -10,7 +10,7 @@ public class InappifyOfferings private constructor(
     public val fetchedAt: String?,
     public val currentOfferingIdentifier: String?,
     placements: Map<String, String?>?,
-    internal val usesServerTargeting: Boolean,
+    public val usesServerTargeting: Boolean,
 ) {
 
     /** Original V1 constructor, including its default-argument JVM ABI. */

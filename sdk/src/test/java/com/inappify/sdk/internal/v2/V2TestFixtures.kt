@@ -55,23 +55,6 @@ internal class V2Transport : HttpTransport {
         TransportResult.Response(HttpResponse(status, body.toString(), null, headers = headers))
 }
 
-internal class LegacyPurchaseFixtureService : InappifyService {
-    var lastPurchase: PurchaseApiRequest? = null
+internal class CommerceCatalogFixture {
     val offerings = """{"offerings":[{"identifier":"default","isDefault":true,"packages":[{"identifier":"package","product":{"identifier":"product"}}]}]}"""
-    private fun response(identity: String, token: String? = null, purchase: BackendPurchase? = null): ServiceResult =
-        ServiceResult.Response(200, BackendResponse(true, null, null, token, identity,
-            """{"originalAppUserId":"$identity"}""", null, 12, 4, offeringsJson = offerings,
-            purchase = purchase, storePlatform = "DirectAndroid"), null)
-    override suspend fun configure(request: ConfigureApiRequest): ServiceResult = response("customer_demo_123456", "legacy-token-A")
-    override suspend fun login(request: LoginApiRequest): ServiceResult = response(request.appUserIdentifier, "legacy-token-B")
-    override suspend fun logout(request: LogoutApiRequest): ServiceResult = response("InaAnonymousId-1", "legacy-anonymous")
-    override suspend fun refreshSession(request: RefreshSessionApiRequest): ServiceResult = getCustomerInfo(request)
-    override suspend fun getCustomerInfo(request: ResourceApiRequest): ServiceResult =
-        response(if (request.token == "legacy-token-B") "customer_other_123456" else "customer_demo_123456")
-    override suspend fun getOfferings(request: ResourceApiRequest): ServiceResult = getCustomerInfo(request)
-    override suspend fun purchase(request: PurchaseApiRequest): ServiceResult {
-        lastPurchase = request
-        return response("customer_demo_123456", purchase = BackendPurchase(null, "DONE", null, null, null))
-    }
-    override fun close() = Unit
 }

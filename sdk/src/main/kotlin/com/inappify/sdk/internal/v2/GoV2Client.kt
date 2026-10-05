@@ -683,10 +683,6 @@ internal class GoV2Client(
             is InappifyResult.Success -> InappifyResult.Success(isActiveEntitlement(identifier), snapshot)
         }
 
-    @Deprecated("V2 commerce uses the Go session directly.")
-    override suspend fun bindLegacyPurchaseClient(client: InappifyClient): InappifyResult<Unit> = run {
-        fail("CONFIGURATION", "LEGACY_PURCHASE_BRIDGE_REMOVED")
-    }
     override suspend fun purchase(request: InappifyPurchaseRequest): InappifyResult<InappifyPurchase> = purchaseInternal(null, request)
     override suspend fun purchase(activity: Activity, request: InappifyPurchaseRequest): InappifyResult<InappifyPurchase> = purchaseInternal(activity, request)
     private suspend fun purchaseInternal(activity: Activity?, request: InappifyPurchaseRequest): InappifyResult<InappifyPurchase> {
@@ -1471,17 +1467,19 @@ internal class GoV2Client(
     }
     internal companion object {
         internal fun create(context: Context): GoV2Client = create(context, GoV2Environment.production())
+        internal fun create(context: Context, unsafeRawHttpLogging: Boolean): GoV2Client =
+            create(context, GoV2Environment.production(), unsafeRawHttpLogging)
         internal fun create(context: Context, configuration: InappifyV2Configuration): GoV2Client =
             create(context, GoV2Environment.explicit(configuration))
-        private fun create(context: Context, configuration: GoV2Environment): GoV2Client {
+        private fun create(context: Context, configuration: GoV2Environment, unsafeRawHttpLogging: Boolean = false): GoV2Client {
             val client = OkHttpClient.Builder().followRedirects(false).followSslRedirects(false)
                 .connectTimeout(15, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS)
                 .writeTimeout(30, TimeUnit.SECONDS).callTimeout(45, TimeUnit.SECONDS)
                 .retryOnConnectionFailure(false).build()
-            return GoV2Client(configuration, GoApi(OkHttpTransport.create(configuration.sdkApiBaseUrl.toHttpUrl(), client), System::currentTimeMillis),
+            return GoV2Client(configuration, GoApi(OkHttpTransport.create(configuration.sdkApiBaseUrl.toHttpUrl(), client, unsafeRawHttpLogging), System::currentTimeMillis),
                 EncryptedSessionStateStore.createGoV2(context), AndroidAppMetadataProvider(context),
                 commerceApi = GoApi(OkHttpTransport.create(configuration.commerceApiBaseUrl.toHttpUrl(),
-                    client.newBuilder().build()), System::currentTimeMillis),
+                    client.newBuilder().build(), unsafeRawHttpLogging), System::currentTimeMillis),
                 billingFactory = AndroidStoreBillingAdapterFactory(context))
         }
     }

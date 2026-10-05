@@ -12,14 +12,8 @@ import com.inappify.sdk.internal.billing.StorePurchase
 import com.inappify.sdk.internal.billing.StorePurchaseQueryResult
 import com.inappify.sdk.internal.billing.StorePurchaseRequest
 import com.inappify.sdk.internal.billing.StoreUiHost
-import com.inappify.sdk.internal.network.ConfigureApiRequest
-import com.inappify.sdk.internal.network.InappifyService
-import com.inappify.sdk.internal.network.LoginApiRequest
-import com.inappify.sdk.internal.network.LogoutApiRequest
-import com.inappify.sdk.internal.network.RefreshSessionApiRequest
-import com.inappify.sdk.internal.network.ResourceApiRequest
+import com.inappify.sdk.internal.network.StoreV2Backend
 import com.inappify.sdk.internal.network.ServiceFailureKind
-import com.inappify.sdk.internal.network.ServiceResult
 import com.inappify.sdk.internal.network.StoreBackendResponse
 import com.inappify.sdk.internal.network.StoreConsumeResult as NetworkConsumeResult
 import com.inappify.sdk.internal.network.StoreConsumeResultApiRequest
@@ -883,7 +877,7 @@ class StoreV2CoordinatorTest(private val market: InappifyMarket) {
     }
 
     @Test
-    fun resume_usesCurrentMatchingSessionTokenInsteadOfPersistedToken() = runBlocking {
+    fun resume_doesNotForwardPersistedCredentialsToTheStoreBackend() = runBlocking {
         val fixture = fixture()
         val pending = operation(
             productType = PendingStoreProductType.NON_CONSUMABLE,
@@ -894,7 +888,10 @@ class StoreV2CoordinatorTest(private val market: InappifyMarket) {
         val outcome = fixture.coordinator.resume(pending, context())
 
         assertTrue(outcome is StoreV2Outcome.Terminal)
-        assertEquals(listOf("test-customer-token"), fixture.service.customerTokens)
+        assertEquals(1, fixture.service.submissions.size)
+        val request = fixture.service.submissions.single()
+        assertEquals(pending.evidence.purchaseToken, request.purchase.token)
+        assertFalse(request.javaClass.declaredFields.any { it.name == "apiKey" || it.name == "token" })
     }
 
     private fun fixture(
@@ -1151,37 +1148,19 @@ class StoreV2CoordinatorTest(private val market: InappifyMarket) {
 
     private class FakeService(
         private val events: MutableList<String>,
-    ) : InappifyService {
+    ) : StoreV2Backend {
         val submitResults = mutableListOf<StoreServiceResult>()
         val statusResults = mutableListOf<StoreServiceResult>()
         val deliveryResults = mutableListOf<StoreServiceResult>()
         val reportResults = mutableListOf<StoreServiceResult>()
         val reportedResults = mutableListOf<NetworkConsumeResult>()
-        val customerTokens = mutableListOf<String>()
-
-        override suspend fun configure(request: ConfigureApiRequest): ServiceResult =
-            ServiceResult.Failure(ServiceFailureKind.UNKNOWN)
-
-        override suspend fun login(request: LoginApiRequest): ServiceResult =
-            ServiceResult.Failure(ServiceFailureKind.UNKNOWN)
-
-        override suspend fun logout(request: LogoutApiRequest): ServiceResult =
-            ServiceResult.Failure(ServiceFailureKind.UNKNOWN)
-
-        override suspend fun refreshSession(request: RefreshSessionApiRequest): ServiceResult =
-            ServiceResult.Failure(ServiceFailureKind.UNKNOWN)
-
-        override suspend fun getCustomerInfo(request: ResourceApiRequest): ServiceResult =
-            ServiceResult.Failure(ServiceFailureKind.UNKNOWN)
-
-        override suspend fun getOfferings(request: ResourceApiRequest): ServiceResult =
-            ServiceResult.Failure(ServiceFailureKind.UNKNOWN)
+        val submissions = mutableListOf<StorePurchaseApiRequest>()
 
         override suspend fun submitStorePurchase(
             request: StorePurchaseApiRequest,
         ): StoreServiceResult {
             events += EVENT_SUBMIT
-            customerTokens += request.token
+            submissions += request
             return submitResults.takeNext(EVENT_SUBMIT)
         }
 
@@ -1207,7 +1186,6 @@ class StoreV2CoordinatorTest(private val market: InappifyMarket) {
             return reportResults.takeNext(EVENT_REPORT)
         }
 
-        override fun close() = Unit
     }
 
     private class FakeBillingFactory(

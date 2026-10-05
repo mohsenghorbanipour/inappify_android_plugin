@@ -9,7 +9,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 
-/** Explicit, fail-closed opt-in to the Go v2 service. V1 creation is unchanged. */
+/** Configuration for the V2-only session service. */
 public class InappifyV2Configuration public constructor(
     public val apiBaseUrl: String = DEFAULT_API_BASE_URL,
     public val issuer: String,
@@ -55,7 +55,7 @@ public class InappifyV2Configuration public constructor(
     public override fun toString(): String = "InappifyV2Configuration(appId=$appId, projectId=$projectId)"
 
     public companion object {
-        /** Official /app service root plus the Go v2 route prefix; V1 routing is independent. */
+        /** Official /app service root plus the Go v2 route prefix; commerce uses a separate V2 origin. */
         public const val DEFAULT_API_BASE_URL: String = "https://service.inappify.com/app/v2/"
         public const val DEFAULT_SDK_API_BASE_URL: String = "https://service.inappify.com/app/v2/"
         public const val DEFAULT_COMMERCE_API_BASE_URL: String = "https://api.inappify.com/app/v2/"
@@ -75,7 +75,7 @@ public class InappifyV2Configuration public constructor(
 
 public enum class InappifyFetchPolicy { CACHE_ONLY, CACHE_FIRST, NETWORK_FIRST, NETWORK_ONLY }
 
-/** Additional Go v2 APIs; the inherited V1-facing method signatures are retained. */
+/** Additional V2 session, cache and recovery APIs. */
 public interface InappifyV2Client : InappifyClient {
     public val hasForceUpdate: Boolean
     public val isLogoutPending: Boolean
@@ -88,14 +88,6 @@ public interface InappifyV2Client : InappifyClient {
     public suspend fun recover(): InappifyResult<Unit>
     /** Stops v2 network use without discarding verified cache; host owns rollout flags. */
     public fun setNetworkEnabled(enabled: Boolean)
-    /**
-     * Retained for binary compatibility. Always fails with LEGACY_PURCHASE_BRIDGE_REMOVED.
-     * V2 purchases and fulfillment use the current Go session directly. Complete any
-     * pre-existing V1 deliveries using their original V1 client and host ledger.
-     */
-    @Deprecated("V2 commerce uses the Go session directly; keep V1 recovery on the original V1 client.")
-    public suspend fun bindLegacyPurchaseClient(client: InappifyClient): InappifyResult<Unit>
-
     public companion object {
         /** Uses the official Go service and bundled signing trust; configure only needs an API key. */
         @JvmStatic

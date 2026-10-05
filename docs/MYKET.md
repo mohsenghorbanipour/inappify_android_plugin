@@ -1,7 +1,7 @@
-# Myket integration (2.4.0)
+# Myket integration (3.0.0)
 
-Version 2.4.0 adds Myket without changing the default V1 factory or the
-existing Direct/Bazaar integration. Use the `v2.4.0` dependency in the
+Version 3.0.0 supports Myket alongside Direct/Bazaar through the V2-only client.
+Use the `3.0.0` dependency in the
 [installation guide](../README.md#installation).
 
 ## Application setup
@@ -16,7 +16,7 @@ server verification credentials:
 
 ```kotlin
 val client = InappifyClient.create(applicationContext)
-// Or explicitly opt into Go with InappifyV2Client.create(applicationContext).
+// InappifyV2Client.create(applicationContext) creates the same V2 client.
 val configured = client.configure(
     InappifyOptions(
         apiKey = "YOUR_INAPPIFY_APP_KEY",
@@ -28,9 +28,8 @@ val configured = client.configure(
 
 The Inappify backend must return `storePlatform=11` (`MyKet`) for this app/session
 and support Myket verification, delivery and consume reporting on its existing
-Store V2 endpoints. The SDK does not configure backend credentials. Default V1
-continues using its existing Laravel authentication; Go V2 commerce and
-fulfillment use the current Go session Bearer. The legacy bridge is disabled in 2.5. No new endpoint or Myket-specific wire field has been invented: the
+Store V2 endpoints. The SDK does not configure backend credentials. Commerce and
+fulfillment use the current Go session Bearer. No Myket-specific wire field has been invented: the
 backend selects the store from the authenticated app/session.
 
 Explicitly selecting Bazaar with a Myket route, or Myket with a Bazaar route,
@@ -112,7 +111,7 @@ to exercise purchase success/cancel, missing store/login, both installed stores,
 rotation/background/process death, restore, delivery retries and consumption.
 Verify both the service and broadcast fallback paths with supported Myket
 versions, including the echoed broadcast nonce. Run the same backend acceptance
-for default V1 and Go commerce; compilation does not prove server support.
+for V2 commerce; compilation does not prove server support.
 
 Source provenance and local adaptations are in
 [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md). Official references:

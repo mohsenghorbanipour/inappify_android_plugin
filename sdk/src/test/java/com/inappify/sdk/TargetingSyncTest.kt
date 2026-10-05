@@ -1,6 +1,5 @@
 package com.inappify.sdk
 
-import com.inappify.sdk.internal.DefaultInappifyClient
 import com.inappify.sdk.internal.TargetingSyncRateLimiter
 import com.inappify.sdk.internal.network.*
 import com.inappify.sdk.internal.platform.AppMetadata
@@ -9,16 +8,9 @@ import com.inappify.sdk.internal.v2.*
 import kotlinx.coroutines.*
 import org.junit.Assert.*
 import org.junit.Test
-import org.junit.runner.RunWith
-import org.junit.runners.Parameterized
 
-/** The same admission, ordering and identity contract applies to both production clients. */
-@RunWith(Parameterized::class)
-class TargetingSyncTest(private val go: Boolean) {
-    companion object {
-        @JvmStatic @Parameterized.Parameters(name = "Go={0}")
-        fun protocols(): List<Array<Boolean>> = listOf(arrayOf(false), arrayOf(true))
-    }
+/** V2 admission, ordering and identity-barrier regression coverage. */
+class TargetingSyncTest {
 
     @Test fun uploadsAttributesBeforeFreshOfferingsAndPersistsAndPublishesTheResult() = runBlocking {
         Fixture().use { f ->
@@ -39,17 +31,13 @@ class TargetingSyncTest(private val go: Boolean) {
                 assertEquals("targeted", result.data.offerings!!.single().identifier)
                 assertEquals("targeted", result.snapshot.offerings!!.offerings!!.single().identifier)
                 assertEquals(result.snapshot.revision, withTimeout(2_000) { event.await() }.snapshot.revision)
-                val persisted = if (go) f.store.value!!.customerInfoJson else f.store.value!!.offeringsJson
+                val persisted = f.store.value!!.customerInfoJson
                 assertTrue(persisted!!.contains("targeted"))
-                if (go) {
+                run {
                     val body = jsonObject(f.transport.requests.last { it.path == "attributes" }.jsonBody)
                     assertEquals("gold", body.getAsJsonObject("attributes").get("tier").asString)
                     assertFalse(jsonObject(f.transport.requests.last().jsonBody).has("forceVersion"))
                     assertTrue(f.transport.requests.last().headers["Authorization"]!!.startsWith("Bearer "))
-                } else {
-                    assertEquals("gold", f.lastAttributes!!.attributes.single().value)
-                    assertEquals("tier", f.lastAttributes!!.attributes.single().key)
-                    assertEquals(f.lastAttributes!!.token, f.lastOfferings!!.token)
                 }
             }
         }
@@ -112,8 +100,7 @@ class TargetingSyncTest(private val go: Boolean) {
             f.calls.clear()
             f.client.syncAttributesAndOfferingsIfNeeded().success()
             assertEquals(listOf("attributes", "offerings"), f.calls)
-            if (!go) assertEquals("gold", f.lastAttributes!!.attributes.single().value)
-            else assertEquals("gold", jsonObject(f.transport.requests.last { it.path == "attributes" }.jsonBody)
+            assertEquals("gold", jsonObject(f.transport.requests.last { it.path == "attributes" }.jsonBody)
                 .getAsJsonObject("attributes").get("tier").asString)
         }
     }
@@ -240,21 +227,16 @@ class TargetingSyncTest(private val go: Boolean) {
         }
     }
 
-    @Test fun legacyForceVersionAdvanceUsesOneAwaitedFetchAndGoKeepsForceFieldsAbsent() = runBlocking {
+    @Test fun syncUsesOneAwaitedFetchAndKeepsForceFieldsAbsent() = runBlocking {
         Fixture().use { f ->
             f.configure()
             f.queue()
             f.calls.clear()
-            f.bumpForceOnSync = true
             f.client.syncAttributesAndOfferingsIfNeeded().success()
             // Acquiring the client mutex again drains any incorrectly scheduled extra refresh.
             f.client.setTargetingContext(country = "DE").success()
             assertEquals(1, f.calls.count { it == "offerings" })
-            if (go) assertNull(f.client.snapshot.forceVersion)
-            else {
-                assertEquals(2L, f.client.snapshot.forceVersion)
-                assertEquals(2L, f.lastOfferings!!.forceVersion)
-            }
+            assertNull(f.client.snapshot.forceVersion)
         }
     }
 
@@ -266,15 +248,8 @@ class TargetingSyncTest(private val go: Boolean) {
             assertTrue(f.client.logout() is InappifyResult.Failure)
             f.calls.clear()
             val result = f.client.syncAttributesAndOfferingsIfNeeded()
-            if (go) {
-                assertTrue(result is InappifyResult.Failure)
-                assertTrue(f.warnings.isEmpty())
-            } else {
-                // V1 intentionally retains its predecessor on failed logout. Its host
-                // owns the pending-logout barrier, just as for existing cache getters.
-                assertEquals(f.signing.subject, result.success().snapshot.appUserIdentifier)
-                assertEquals(1, f.warnings.size)
-            }
+            assertTrue(result is InappifyResult.Failure)
+            assertTrue(f.warnings.isEmpty())
             assertTrue(f.calls.isEmpty())
         }
     }
@@ -309,53 +284,10 @@ class TargetingSyncTest(private val go: Boolean) {
         var offline = false
         var failOfferings = false
         var rejectAttributes = false
-        var bumpForceOnSync = false
-        private var forceVersion = 1L
         var attributeGate: suspend () -> Unit = {}
-        var lastAttributes: SyncAttributesApiRequest? = null
-        var lastOfferings: ResourceApiRequest? = null
         private val limiter = TargetingSyncRateLimiter({ elapsed }, { warnings += it })
         private val metadata = AppMetadataProvider { AppMetadata("com.example.mobile", "2.4.0", 20400) }
         private fun offerings() = """{"status":true,"offerings":[{"identifier":"$catalog","isDefault":true}],"currentOffering":"$catalog"}"""
-        private val service = object : InappifyService {
-            private fun response(identity: String = signing.subject, withSession: Boolean = false,
-                attributes: Boolean = false, status: Boolean = true, offers: Boolean = false): ServiceResult =
-                ServiceResult.Response(200, BackendResponse(status, null, null,
-                    if (withSession) "token-$identity" else null, identity,
-                    """{"originalAppUserId":"$identity","attributes":[{"key":"tier","value":"gold"}]}""",
-                    null, 12, forceVersion, offeringsJson = if (offers) offerings() else null,
-                    attributesJson = if (attributes) """[{"key":"tier","value":"gold"}]""" else null), null)
-            override suspend fun configure(request: ConfigureApiRequest): ServiceResult {
-                calls += "configure"
-                return response(request.appUserIdentifier ?: signing.subject, withSession = true)
-            }
-            override suspend fun login(request: LoginApiRequest): ServiceResult {
-                calls += "login"
-                return response(request.appUserIdentifier, withSession = true)
-            }
-            override suspend fun logout(request: LogoutApiRequest): ServiceResult {
-                calls += "logout"
-                return if (offline) ServiceResult.Failure(ServiceFailureKind.NETWORK)
-                else response("InaAnonymousId-1", withSession = true)
-            }
-            override suspend fun refreshSession(request: RefreshSessionApiRequest) = response()
-            override suspend fun getCustomerInfo(request: ResourceApiRequest) = response()
-            override suspend fun getOfferings(request: ResourceApiRequest): ServiceResult {
-                calls += "offerings"
-                lastOfferings = request
-                return if (offline || failOfferings) ServiceResult.Failure(ServiceFailureKind.NETWORK)
-                else response(offers = true)
-            }
-            override suspend fun syncAttributes(request: SyncAttributesApiRequest): ServiceResult {
-                calls += "attributes"
-                lastAttributes = request
-                attributeGate()
-                if (bumpForceOnSync) forceVersion = 2
-                return if (offline) ServiceResult.Failure(ServiceFailureKind.NETWORK)
-                else response(attributes = true, status = !rejectAttributes)
-            }
-            override fun close() = Unit
-        }
         init {
             transport.handler = { request ->
                 calls += request.path
@@ -373,16 +305,14 @@ class TargetingSyncTest(private val go: Boolean) {
                 }
             }
         }
-        val client: InappifyClient = if (go) GoV2Client(signing.config, GoApi(transport, { signing.now }, {}),
+        val client: InappifyClient = GoV2Client(signing.config, GoApi(transport, { signing.now }, {}),
             store, metadata, { signing.now }, Dispatchers.Unconfined, backgroundRecovery = false,
             targetingSyncLimiter = limiter)
-        else DefaultInappifyClient(service, store, metadata, "test", targetingSyncLimiter = limiter)
         suspend fun configure() {
             client.configure(InappifyOptions("fixture-key", appUserIdentifier = signing.subject)).success()
         }
         suspend fun queue() {
-            // V1 already holds the complete current attributes from configure; Go is write-only.
-            if (go) (client as InappifyV2Client).queueAttributes(mapOf("tier" to "gold")).success()
+            (client as InappifyV2Client).queueAttributes(mapOf("tier" to "gold")).success()
         }
         override fun close() = client.close()
     }

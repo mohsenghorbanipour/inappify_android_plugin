@@ -65,9 +65,10 @@ Do not upload instrumentation APKs as consumer release assets.
 
 ## Compatibility and acceptance
 
-Run the V1 API/behavior regressions. For binary assurance, compare matching
-release variants and execute tests compiled against the actual V1 artifact
-without recompiling them. Record the exact scope of the comparison.
+Run the V2 session/resource/commerce and marketplace regressions. Version 3
+intentionally removes V1 implementations and the companion API and changes the
+default factory's return descriptor; document these major-version changes.
+Check source and release archives for production V1 routes and private files.
 
 Compile instrumentation separately from executing it. Execute only on an
 isolated test installation, including API 21/22, 23 and a current Android API.

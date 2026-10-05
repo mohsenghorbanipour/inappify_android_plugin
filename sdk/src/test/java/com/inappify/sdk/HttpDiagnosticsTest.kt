@@ -66,7 +66,7 @@ class HttpDiagnosticsTest {
         val server = MockWebServer()
         server.start()
         val transport = OkHttpTransport.create(
-            baseUrl = server.url("/app/v1/"),
+            baseUrl = server.url("/app/v2/"),
             client = OkHttpClient(),
         )
         val received = AtomicReference<InappifyHttpTrace?>()
@@ -100,7 +100,7 @@ class HttpDiagnosticsTest {
         assertNotNull(trace)
         requireNotNull(trace)
         assertEquals("POST", trace.method)
-        assertTrue(trace.endpoint.endsWith("/app/v1/configure"))
+        assertTrue(trace.endpoint.endsWith("/app/v2/configure"))
         assertFalse(trace.endpoint.contains("query-secret"))
         assertEquals(401, trace.statusCode)
         assertEquals("safe-request-123", trace.requestId)
@@ -179,7 +179,7 @@ class HttpDiagnosticsTest {
         val server = MockWebServer()
         server.start()
         val transport = OkHttpTransport.create(
-            baseUrl = server.url("/app/v1/"),
+            baseUrl = server.url("/app/v2/"),
             client = OkHttpClient(),
         )
         var peerCalls = 0

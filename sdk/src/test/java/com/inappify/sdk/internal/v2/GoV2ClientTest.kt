@@ -2,7 +2,6 @@ package com.inappify.sdk.internal.v2
 
 import com.google.gson.*
 import com.inappify.sdk.*
-import com.inappify.sdk.internal.DefaultInappifyClient
 import com.inappify.sdk.internal.domain.InappifyDomainJsonCodec
 import com.inappify.sdk.internal.network.*
 import com.inappify.sdk.internal.platform.*
@@ -12,30 +11,17 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class GoV2ClientTest {
-    @Test fun directV2PurchaseUsesGoSessionWithoutLegacyCredentialsOrV1StateChanges() = runBlocking {
-        val legacyService = LegacyPurchaseFixtureService()
-        val legacyStore = MemoryV2Store()
-        val legacy = DefaultInappifyClient(legacyService, legacyStore,
-            AppMetadataProvider { AppMetadata("com.example.mobile", "2.4.0", 20400) }, "2.0.0")
-        legacy.use {
-            assertTrue(legacy.configure(InappifyOptions("legacy-key", "customer_demo_123456")) is InappifyResult.Success)
-            client().use { sdk ->
-                configured(sdk)
-                assertTrue(legacy.login(InappifyLoginRequest("legacy-key", "customer_other_123456")) is InappifyResult.Success)
-                val base = transport.handler
-                transport.handler = { req -> if (req.path == "offerings") transport.response(jsonObject(
-                    legacyService.offerings).apply { addProperty("status", true) }) else base(req) }
-                sdk.refreshOfferings()
-                assertTrue(sdk.purchase(InappifyPurchaseRequest("product", "default")) is InappifyResult.Success)
-                assertNull(legacyService.lastPurchase)
-                val purchaseRequest = transport.requests.last { it.path == "purchase" }
-                assertEquals("Bearer go-session-token", purchaseRequest.headers["Authorization"])
-                assertEquals(setOf("productIdentifier", "offeringIdentifier", "isCrypto"),
-                    jsonObject(purchaseRequest.jsonBody).keySet())
-                assertEquals("legacy-token-B", legacyStore.value?.token)
-                assertEquals("customer_other_123456", legacy.snapshot.appUserIdentifier)
-                assertEquals(signing.subject, sdk.snapshot.appUserIdentifier)
-            }
+    @Test fun directPurchaseUsesOnlyTheSessionBearer() = runBlocking {
+        client().use { sdk ->
+            configured(sdk)
+            val base = transport.handler
+            transport.handler = { req -> if (req.path == "offerings") transport.response(jsonObject(
+                CommerceCatalogFixture().offerings).apply { addProperty("status", true) }) else base(req) }
+            sdk.refreshOfferings()
+            assertTrue(sdk.purchase(InappifyPurchaseRequest("product", "default")) is InappifyResult.Success)
+            val request = transport.requests.last { it.path == "purchase" }
+            assertEquals("Bearer go-session-token", request.headers["Authorization"])
+            assertEquals(setOf("productIdentifier", "offeringIdentifier", "isCrypto"), jsonObject(request.jsonBody).keySet())
         }
     }
     private val signing = SigningFixture()
@@ -102,7 +88,7 @@ class GoV2ClientTest {
             configured(sdk)
             val base = transport.handler
             transport.handler = { req -> if (req.path == "offerings") transport.response(jsonObject(
-                LegacyPurchaseFixtureService().offerings).apply { addProperty("status", true) }) else base(req) }
+                CommerceCatalogFixture().offerings).apply { addProperty("status", true) }) else base(req) }
             assertTrue(sdk.refreshOfferings() is InappifyResult.Success)
             transport.handler = { req -> if (req.path == "purchase")
                 TransportResult.Failure(TransportFailureKind.NETWORK) else base(req) }

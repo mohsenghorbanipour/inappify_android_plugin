@@ -264,17 +264,17 @@ class GoCommerceSessionTest {
                 var session = "store-session-a"
                 val service = GoV2StoreService(GoApi(transport, { now }, {})) { session }
                 enqueue("""{"purchase":{"status":"PROCESSING","verificationRequestId":9,"retryAfter":2}}""")
-                val submit = service.submitStorePurchase(StorePurchaseApiRequest("legacy-key", "legacy-token", "com.example.app",
-                    "coins", "default", "IR", "1.0", 4, StorePurchaseOperation.PURCHASE,
+                val submit = service.submitStorePurchase(StorePurchaseApiRequest(
+                    "coins", "default", StorePurchaseOperation.PURCHASE,
                     StorePurchaseEvidence("receipt-secret", 10, null, "com.example.app", null, "original-secret", "signature-secret")))
                 assertTrue(submit is StoreServiceResult.Response)
                 session = "store-session-b"
                 enqueue("""{"status":"DELIVERY_REQUIRED","deliveryId":7}""")
-                service.getStoreVerificationStatus(StoreVerificationStatusApiRequest("legacy-key", "legacy-token", 9))
+                service.getStoreVerificationStatus(StoreVerificationStatusApiRequest(9))
                 enqueue("""{"status":"CONSUME_REQUIRED","deliveryId":7}""")
-                service.markStoreDeliveryDelivered(StoreDeliveryApiRequest("legacy-key", "legacy-token", 7))
+                service.markStoreDeliveryDelivered(StoreDeliveryApiRequest(7))
                 enqueue("""{"status":"COMPLETED","deliveryId":7}""")
-                service.reportStoreConsumeResult(StoreConsumeResultApiRequest("legacy-key", "legacy-token", 7, StoreConsumeResult.SUCCEEDED, null))
+                service.reportStoreConsumeResult(StoreConsumeResultApiRequest(7, StoreConsumeResult.SUCCEEDED, null))
                 // Diagnostics run on their own executor; closing the owning client cancels queued callbacks.
                 assertTrue("All HTTP diagnostics must arrive before close", tracesDelivered.await(5, java.util.concurrent.TimeUnit.SECONDS))
             }

@@ -53,6 +53,16 @@ class OkHttpTransportTest {
     }
 
     @Test
+    fun routesOutsideV2_areRejectedBeforeHttp() = runBlocking {
+        val transport = createTransport()
+        for (path in listOf("../v1/configure", "/app/v1/purchase", "https://other.example/app/v2/configure")) {
+            val result = transport.execute(HttpRequest(path, "{}")) as TransportResult.Failure
+            assertEquals(TransportFailureKind.NETWORK, result.kind)
+        }
+        assertEquals(0, server.requestCount)
+    }
+
+    @Test
     fun executeAfterClose_isCancelledWithoutEnqueuingARequest() = runBlocking {
         val transport = createTransport()
         transport.close()
@@ -124,7 +134,7 @@ class OkHttpTransportTest {
     private fun createTransport(
         client: OkHttpClient = OkHttpClient(),
     ): OkHttpTransport = OkHttpTransport.create(
-        baseUrl = server.url("/app/v1/"),
+        baseUrl = server.url("/app/v2/"),
         client = client,
     ).also(transports::add)
 

@@ -12,7 +12,7 @@ import com.inappify.sdk.internal.billing.StoreBillingErrorCode
 import com.inappify.sdk.internal.billing.StoreConsumeResult
 import com.inappify.sdk.internal.billing.StorePurchase
 import com.inappify.sdk.internal.billing.storeId
-import com.inappify.sdk.internal.network.InappifyService
+import com.inappify.sdk.internal.network.StoreV2Backend
 import com.inappify.sdk.internal.network.ServiceFailureKind
 import com.inappify.sdk.internal.network.StoreConsumeResult as NetworkConsumeResult
 import com.inappify.sdk.internal.network.StoreConsumeResultApiRequest
@@ -103,7 +103,7 @@ internal sealed interface StoreV2Outcome {
  * that can turn that evidence into a terminal server-authoritative result.
  */
 internal class StoreV2Coordinator(
-    private val service: InappifyService,
+    private val service: StoreV2Backend,
     private val stateStore: SessionStateStore,
     private val billingAdapterFactory: StoreBillingAdapterFactory,
     private val currentTimeMillis: () -> Long = System::currentTimeMillis,
@@ -223,14 +223,8 @@ internal class StoreV2Coordinator(
                         val evaluated = evaluate(
                             service.submitStorePurchase(
                                 StorePurchaseApiRequest(
-                                    apiKey = context.apiKey,
-                                    token = context.customerToken,
-                                    appIdentifier = operation.appIdentifier,
                                     productIdentifier = operation.productIdentifier,
                                     offeringIdentifier = offeringIdentifier,
-                                    country = context.country,
-                                    appVersion = context.appVersion,
-                                    forceVersion = context.forceVersion,
                                     operation = when (operation.operation) {
                                         PendingStoreOperationType.PURCHASE ->
                                             StorePurchaseOperation.PURCHASE
@@ -313,8 +307,6 @@ internal class StoreV2Coordinator(
                         val evaluated = evaluate(
                             service.getStoreVerificationStatus(
                                 StoreVerificationStatusApiRequest(
-                                    apiKey = context.apiKey,
-                                    token = context.customerToken,
                                     verificationRequestId = verificationRequestId,
                                 ),
                             ),
@@ -375,8 +367,6 @@ internal class StoreV2Coordinator(
                         val evaluated = evaluate(
                             service.markStoreDeliveryDelivered(
                                 StoreDeliveryApiRequest(
-                                    apiKey = context.apiKey,
-                                    token = context.customerToken,
                                     deliveryId = deliveryId,
                                 ),
                             ),
@@ -478,8 +468,6 @@ internal class StoreV2Coordinator(
                         val evaluated = evaluate(
                             service.reportStoreConsumeResult(
                                 StoreConsumeResultApiRequest(
-                                    apiKey = context.apiKey,
-                                    token = context.customerToken,
                                     deliveryId = deliveryId,
                                     result = when (consumeResult) {
                                         PendingStoreConsumeResult.SUCCEEDED ->

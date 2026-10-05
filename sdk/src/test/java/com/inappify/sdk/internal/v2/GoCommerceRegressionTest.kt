@@ -2,7 +2,6 @@ package com.inappify.sdk.internal.v2
 
 import com.google.gson.JsonObject
 import com.inappify.sdk.*
-import com.inappify.sdk.internal.DefaultInappifyClient
 import com.inappify.sdk.internal.billing.*
 import com.inappify.sdk.internal.network.*
 import com.inappify.sdk.internal.platform.*
@@ -411,29 +410,6 @@ class GoCommerceRegressionTest(private val nativeMarket: InappifyMarket) {
             assertEquals(1, storage.operations.size)
         }
     }
-    @Suppress("DEPRECATION")
-    @Test fun deprecatedBridgeRejectsCredentialsWithoutChangingEitherPendingJournal() = runBlocking {
-        val legacyStorage = CommerceStore()
-        DefaultInappifyClient(LegacyPurchaseFixtureService(), legacyStorage, metadata, "2.1.0").use { legacy ->
-            assertTrue(legacy.configure(InappifyOptions("legacy-fixture-key", signing.subject)) is InappifyResult.Success)
-            client().use { sdk ->
-                configured(sdk)
-                val goPending = pending()
-                val legacyPending = pending().copy(apiKeyFingerprint = legacyStorage.value!!.apiKeyFingerprint!!)
-                storage.upsertPendingStoreOperation(goPending)
-                legacyStorage.upsertPendingStoreOperation(legacyPending)
-                val beforeLegacy = legacy.snapshot
-                val result = sdk.bindLegacyPurchaseClient(legacy) as InappifyResult.Failure
-                assertEquals("LEGACY_PURCHASE_BRIDGE_REMOVED", result.error.details["serverCode"])
-                assertEquals(listOf(goPending), storage.operations)
-                assertEquals(listOf(legacyPending), legacyStorage.operations)
-                assertEquals(beforeLegacy.revision, legacy.snapshot.revision)
-                assertEquals(beforeLegacy.appUserIdentifier, legacy.snapshot.appUserIdentifier)
-                assertTrue(commerceTransport.requests.isEmpty())
-            }
-        }
-    }
-
     private class CommerceStore : SessionStateStore {
         var value: PersistedSession? = null
         val operations = mutableListOf<PendingStoreOperation>()

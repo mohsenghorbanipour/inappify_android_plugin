@@ -1,5 +1,17 @@
 # Changelog
 
+## 3.0.0
+
+- Remove the V1 client, service, transport factory and purchase-companion API.
+  Both Android factories now return the V2 client. Recompile integrations for
+  this major release; old V1 paid operations require their original client.
+- Restrict HTTP transport to the configured origin's V2 path. Commerce uses the
+  current session Bearer and request DTOs contain no legacy credentials/context.
+- Expose the server-targeting marker so the Flutter bridge can preserve
+  currentOffering and placements in cached models. SDK version is exactly 3.0.0.
+- Preserve existing V2 session, Store journal and Direct checkpoint namespaces;
+  do not migrate or delete old paid-operation state.
+
 Library versions are independent of the V1, Laravel Store V2 and Go V2 HTTP
 protocols. See the [upgrade guide](docs/MIGRATION.md) before changing factories.
 

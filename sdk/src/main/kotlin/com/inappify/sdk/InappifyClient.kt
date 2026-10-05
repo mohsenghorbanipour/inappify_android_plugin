@@ -2,7 +2,7 @@ package com.inappify.sdk
 
 import android.app.Activity
 import android.content.Context
-import com.inappify.sdk.internal.DefaultInappifyClient
+import com.inappify.sdk.internal.v2.GoV2Client
 
 /**
  * Public entry point for an Inappify session.
@@ -28,8 +28,8 @@ public interface InappifyClient : AutoCloseable {
          * call [close] when the owner is permanently released.
          */
         @JvmStatic
-        public fun create(context: Context): InappifyClient =
-            DefaultInappifyClient.create(context.applicationContext)
+        public fun create(context: Context): InappifyV2Client =
+            GoV2Client.create(context.applicationContext)
     }
 
     /** Latest authoritative, token-free state owned by this client. */
@@ -235,10 +235,8 @@ public interface InappifyClient : AutoCloseable {
     /**
      * Purchases one product through the configured app route.
      *
-     * The default client preserves [InappifyPurchaseRequest.market] for V1
-     * requests without a product type. Explicitly typed V2 requests use the
-     * server route, falling back to the request market when it is absent.
-     * The opt-in Go client always uses its bound server route.
+     * Both factories use the verified V2 session's server route. Unsupported,
+     * missing or conflicting marketplace selection fails explicitly.
      *
      * This overload supports direct, lost-purchase, and trial flows which do
      * not need marketplace UI. A non-trial Bazaar request fails with
@@ -252,10 +250,8 @@ public interface InappifyClient : AutoCloseable {
     /**
      * Purchases one product through the configured app route.
      *
-     * The default client preserves [InappifyPurchaseRequest.market] for V1
-     * requests without a product type. Explicitly typed V2 requests use the
-     * server route, falling back to the request market when it is absent.
-     * The opt-in Go client always uses its bound server route.
+     * Both factories use the verified V2 session's server route. Unsupported,
+     * missing or conflicting marketplace selection fails explicitly.
      *
      * [activity] must be the current foreground activity and must implement
      * AndroidX `ActivityResultRegistryOwner` and `LifecycleOwner`. It is used

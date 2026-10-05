@@ -7,20 +7,10 @@ import kotlinx.coroutines.CancellationException
 /** Adapts the existing durable Bazaar coordinator to the session-scoped Laravel V2 API. */
 internal class GoV2StoreService(
     private val request: suspend (String, JsonObject) -> GoApiResponse,
-) : InappifyService {
+) : StoreV2Backend {
     constructor(api: GoApi, sessionToken: suspend () -> String) : this({ endpoint, body ->
         api.requestWithMetadata(endpoint, sessionToken(), body, retry = false)
     })
-    override suspend fun configure(request: ConfigureApiRequest): ServiceResult = unsupported()
-    override suspend fun login(request: LoginApiRequest): ServiceResult = unsupported()
-    override suspend fun logout(request: LogoutApiRequest): ServiceResult = unsupported()
-    override suspend fun refreshSession(request: RefreshSessionApiRequest): ServiceResult = unsupported()
-    override suspend fun getCustomerInfo(request: ResourceApiRequest): ServiceResult = unsupported()
-    override suspend fun getOfferings(request: ResourceApiRequest): ServiceResult = unsupported()
-    override fun close() = Unit // GoV2Client owns the transport.
-
-    private fun unsupported(): ServiceResult = ServiceResult.Failure(ServiceFailureKind.UNKNOWN)
-
     override suspend fun submitStorePurchase(request: StorePurchaseApiRequest): StoreServiceResult =
         call("store/purchases", JsonObject().apply {
             addProperty("productIdentifier", request.productIdentifier)

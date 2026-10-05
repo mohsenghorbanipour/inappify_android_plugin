@@ -11,7 +11,7 @@ class GoV2StoreServiceTest {
     private val service = GoV2StoreService(GoApi(transport, { 0L }, {})) { "fixture-go-session" }
     private suspend fun status(state: String): StoreServiceResult {
         transport.handler = { transport.response(jsonObject("""{"status":true,"data":$state}""")) }
-        return service.getStoreVerificationStatus(StoreVerificationStatusApiRequest("unused-key", "unused-token", 9))
+        return service.getStoreVerificationStatus(StoreVerificationStatusApiRequest(9))
     }
     @Test fun rejectsCoercedFractionalOverflowNegativeAndNonNumericIdentifiers() = runBlocking {
         for (value in listOf("1.5", "\"7\"", "true", "9223372036854775808", "0", "-1", "{}")) {
@@ -40,21 +40,21 @@ class GoV2StoreServiceTest {
         for (data in listOf("""{"status":"CONSUME_REQUIRED","deliveryId":7}""",
             """{"purchase":{"status":"CONSUME_REQUIRED","deliveryId":7}}""")) {
             transport.handler = { transport.response(jsonObject("""{"status":true,"data":$data}""")) }
-            val result = service.markStoreDeliveryDelivered(StoreDeliveryApiRequest("unused", "unused", 7))
+            val result = service.markStoreDeliveryDelivered(StoreDeliveryApiRequest(7))
             assertEquals(StorePurchaseStatus.CONSUME_REQUIRED, (result as StoreServiceResult.Response).payload.state!!.status)
         }
     }
     @Test fun transportCancellationIsNeverConvertedToMalformedResponse() = runBlocking {
         transport.handler = { throw CancellationException("fixture cancellation") }
         try {
-            service.markStoreDeliveryDelivered(StoreDeliveryApiRequest("unused", "unused", 7))
+            service.markStoreDeliveryDelivered(StoreDeliveryApiRequest(7))
             fail("Cancellation must propagate")
         } catch (_: CancellationException) { }
     }
     @Test fun rateLimitPreservesRetryAfterForDurableCoordinatorBackoff() = runBlocking {
         transport.handler = { transport.response(jsonObject("""{"status":false,"code":"RATE_LIMITED"}"""), 429,
             mapOf("Retry-After" to "300")) }
-        val result = service.getStoreVerificationStatus(StoreVerificationStatusApiRequest("unused", "unused", 9)) as StoreServiceResult.Response
+        val result = service.getStoreVerificationStatus(StoreVerificationStatusApiRequest(9)) as StoreServiceResult.Response
         assertEquals(429, result.statusCode)
         assertEquals(300L, result.retryAfterSeconds)
         assertEquals(1, transport.requests.size)

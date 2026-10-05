@@ -1,6 +1,8 @@
 package com.inappify.sdk.internal.v2
 
 import com.inappify.sdk.InappifyV2Configuration
+import com.inappify.sdk.InappifyClient
+import com.inappify.sdk.InappifyV2Client
 import com.inappify.sdk.internal.network.OkHttpTransport
 import kotlinx.coroutines.runBlocking
 import okhttp3.HttpUrl
@@ -102,13 +104,11 @@ class GoEndpointConfigurationTest {
         } finally { api.close() }
     }
 
-    @Test fun legacyProductionFactoryStillUsesV1Root() {
-        val transport = OkHttpTransport.createProduction()
-        try {
-            val field = OkHttpTransport::class.java.getDeclaredField("baseUrl").apply { isAccessible = true }
-            val url = field.get(transport) as HttpUrl
-            assertEquals("https://service.inappify.com/app/v1/", url.toString())
-            assertEquals("https://service.inappify.com/app/v1/configure", url.resolve("configure").toString())
-        } finally { transport.close() }
+    @Test fun defaultFactoryExposesTheV2SessionApi() {
+        assertEquals(InappifyV2Client::class.java,
+            InappifyClient::class.java.getMethod("create", android.content.Context::class.java).returnType)
+        assertThrows(ClassNotFoundException::class.java) {
+            Class.forName("com.inappify.sdk.internal.DefaultInappifyClient")
+        }
     }
 }

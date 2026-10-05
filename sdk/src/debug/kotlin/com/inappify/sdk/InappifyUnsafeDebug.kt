@@ -1,7 +1,7 @@
 package com.inappify.sdk
 
 import android.content.Context
-import com.inappify.sdk.internal.DefaultInappifyClient
+import com.inappify.sdk.internal.v2.GoV2Client
 
 /**
  * Debug-variant-only entry point for temporarily exposing raw HTTP diagnostics.
@@ -15,7 +15,7 @@ public object InappifyUnsafeDebug {
     /** Creates a production-service client whose diagnostic traces are not redacted. */
     @JvmStatic
     public fun createClient(context: Context): InappifyClient =
-        DefaultInappifyClient.create(
+        GoV2Client.create(
             context = context.applicationContext,
             unsafeRawHttpLogging = true,
         )

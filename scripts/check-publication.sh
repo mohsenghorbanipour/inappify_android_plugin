@@ -21,3 +21,7 @@ if ((violations > 0)); then
   exit 1
 fi
 printf 'Public source boundary check passed.\n'
+if rg -n '/app/v1/' sdk/src/main sdk/src/debug; then
+  printf 'Production SDK contains a removed V1 route.\n' >&2
+  exit 1
+fi

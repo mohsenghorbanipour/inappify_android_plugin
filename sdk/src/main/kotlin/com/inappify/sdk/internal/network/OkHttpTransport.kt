@@ -14,7 +14,6 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.HttpUrl
-import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -49,7 +48,10 @@ internal class OkHttpTransport private constructor(
             )
         }
 
-        val url = baseUrl.resolve(request.path)
+        val url = baseUrl.resolve(request.path)?.takeIf {
+            it.scheme == baseUrl.scheme && it.host == baseUrl.host &&
+                it.port == baseUrl.port && it.encodedPath.startsWith("/app/v2/")
+        }
             ?: return report(
                 request = request,
                 url = null,
@@ -256,24 +258,6 @@ internal class OkHttpTransport private constructor(
         private const val CONTENT_TYPE_HEADER = "Content-Type"
         private const val HTTP_METHOD = "POST"
         internal const val MAX_RESPONSE_BODY_BYTES = 1024L * 1024L
-        private const val PRODUCTION_BASE_URL =
-            "https://service.inappify.com/app/v1/"
-
-        internal fun createProduction(
-            unsafeRawHttpLogging: Boolean = false,
-        ): OkHttpTransport =
-            OkHttpTransport(
-                baseUrl = PRODUCTION_BASE_URL.toHttpUrl(),
-                client = OkHttpClient.Builder()
-                    .connectTimeout(15, TimeUnit.SECONDS)
-                    .readTimeout(30, TimeUnit.SECONDS)
-                    .writeTimeout(30, TimeUnit.SECONDS)
-                    .callTimeout(45, TimeUnit.SECONDS)
-                    .retryOnConnectionFailure(false)
-                    .build(),
-                unsafeRawHttpLogging = unsafeRawHttpLogging,
-            )
-
         internal fun create(
             baseUrl: HttpUrl,
             client: OkHttpClient,
