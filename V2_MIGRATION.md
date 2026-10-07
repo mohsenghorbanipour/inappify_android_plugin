@@ -1,4 +1,4 @@
-# V2 sessions and commerce in 3.0.0
+# V2 sessions and commerce in 3.1.0
 
 The 3.0.0 major release follows the supplied Android purchase migration contract
 (version 1.1). V2 is the only mobile HTTP implementation and is the default for
@@ -26,7 +26,7 @@ renews the same identity under the mutex and allows at most one defined replay.
 Invalid or revoked sessions do not loop through Configure.
 
 Attributes are durable write-only batches. Offerings carry server-selected
-currentOffering/placements and SDK version `3.0.0`; use sync/fetch before a
+currentOffering/placements and SDK version `3.1.0`; use sync/fetch before a
 custom-attribute paywall. Flutter forwards server selection through the native
 bridge and preserves it in the cached Dart model. Full remote rendering remains
 subject to the SDK's presentation compatibility gates.

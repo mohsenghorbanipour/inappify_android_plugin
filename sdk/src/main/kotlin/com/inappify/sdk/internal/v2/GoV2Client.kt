@@ -940,7 +940,8 @@ internal class GoV2Client(
             "Store verification is pending; retry the same purchase attempt.", isRetryable = true,
             details = mapOf("operation" to "storePurchaseVerification", "outcomeMayHaveCommitted" to true,
                 "phase" to outcome.operation.phase.name))
-    private suspend fun reconcileStorePurchases(queryOwned: Boolean, explicitRestore: Boolean): StoreReconciliation {
+    private suspend fun reconcileStorePurchases(queryOwned: Boolean, explicitRestore: Boolean,
+        confirmedCustomerInfo: InappifyCustomerInfo? = snapshot.customerInfo): StoreReconciliation {
         if (nativeStoreMarket(snapshot.storePlatform) == null) fail("CONFIGURATION", "UNSUPPORTED_STORE_PLATFORM")
         val coordinator = storeCoordinator ?: fail("CONFIGURATION", "LARAVEL_V2_NOT_CONFIGURED")
         val context = storeContext()
@@ -953,12 +954,17 @@ internal class GoV2Client(
         var queryFailures = 0
         var firstError: InappifyError? = null
         val knownTokens = mutableSetOf<String>()
+        val knownSubscriptionReceipts = mutableSetOf<Pair<String, Long>>()
         val reservedOperationIds = recovery.operations.mapTo(mutableSetOf()) { it.id }
+        val operationsById = recovery.operations.associateByTo(mutableMapOf()) { it.id }
         for (pending in recovery.operations.filter { it.store == context.store &&
             it.apiKeyFingerprint == context.apiKeyFingerprint &&
             it.customerIdentifierFingerprint == context.customerIdentifierFingerprint &&
             it.appId == context.appId && it.appIdentifier == context.appIdentifier }) {
-            knownTokens += pending.evidence.purchaseToken
+            val purchaseTime = pending.evidence.purchaseTimeMillis
+            if (pending.productType == PendingStoreProductType.SUBSCRIPTION && purchaseTime != null)
+                knownSubscriptionReceipts += pending.evidence.purchaseToken to purchaseTime
+            else knownTokens += pending.evidence.purchaseToken
             if (storeTombstone(pending, context) in recovery.rejectedEvidenceTombstones) {
                 if (!storage.removePendingStoreOperation(pending.id)) fail("STORAGE", "STORE_REJECTION_NOT_PERSISTED")
                 continue
@@ -993,8 +999,11 @@ internal class GoV2Client(
                         is StorePurchaseQueryResult.Success -> {
                             if (explicitRestore) failed += query.invalidPurchaseCount
                             for (receipt in query.purchases) {
-                                if (receipt.packageName != context.appIdentifier ||
-                                    !knownTokens.add(receipt.purchaseToken)) continue
+                                if (receipt.packageName != context.appIdentifier) continue
+                                if (storeType == StoreProductType.SUBSCRIPTION) {
+                                    if (receipt.purchaseToken in knownTokens || !knownSubscriptionReceipts.add(
+                                            receipt.purchaseToken to receipt.purchaseTimeMillis)) continue
+                                } else if (!knownTokens.add(receipt.purchaseToken)) continue
                                 val payload = runCatching { JsonParser.parseString(receipt.developerPayload).asJsonObject }
                                     .getOrNull()
                                 val expectedBinding = digest("${context.apiKeyFingerprint}:${context.customerIdentifierFingerprint}")
@@ -1017,6 +1026,16 @@ internal class GoV2Client(
                                     if (explicitRestore) failed++
                                     continue
                                 }
+                                // Only a server-confirmed occurrence suppresses a newly discovered receipt.
+                                // Pending journals above must still finish delivery/consume checkpoints.
+                                // A renewed subscription may retain its token but change its purchase time.
+                                val purchaseRefHash = digest(receipt.purchaseToken)
+                                if (!explicitRestore && declaredType in setOf(
+                                        InappifyProductType.NON_CONSUMABLE.name, InappifyProductType.SUBSCRIPTION.name) &&
+                                    confirmedCustomerInfo?.entitlements.orEmpty().any {
+                                        it.purchaseStoreRefHash == purchaseRefHash &&
+                                            it.purchaseStoreTime == receipt.purchaseTimeMillis
+                                    }) continue
                                 // Never restore a consumable merely because it appears in owned inventory.
                                 if (explicitRestore && pendingType == PendingStoreProductType.LEGACY_IN_APP &&
                                     declaredType != InappifyProductType.NON_CONSUMABLE.name) continue
@@ -1029,7 +1048,9 @@ internal class GoV2Client(
                                     InappifyProductType.SUBSCRIPTION.name -> PendingStoreProductType.SUBSCRIPTION
                                     else -> pendingType
                                 }
-                                val operationId = if (explicitRestore) "restore:${digest(if (context.market == InappifyMarket.MYKET) "myket:${receipt.purchaseToken}" else receipt.purchaseToken).take(64)}" else attempt
+                                val originalOperationId = if (explicitRestore) "restore:${digest(if (context.market == InappifyMarket.MYKET) "myket:${receipt.purchaseToken}" else receipt.purchaseToken).take(64)}" else attempt
+                                val operationId = subscriptionRecoveryId(originalOperationId, type, receipt,
+                                    context, operationsById[originalOperationId])
                                 // A recovered callback must not overwrite another paid receipt's journal.
                                 if (!reservedOperationIds.add(operationId)) {
                                     if (explicitRestore) failed++
@@ -1052,6 +1073,7 @@ internal class GoV2Client(
                                         receipt.originalJson.takeIf(String::isNotBlank),
                                         receipt.signature.takeIf(String::isNotBlank), receipt.purchaseTimeMillis),
                                     createdAtEpochMillis = now())
+                                operationsById[operationId] = pending
                                 if (storeTombstone(pending, context) in recovery.rejectedEvidenceTombstones) {
                                     if (explicitRestore) failed++
                                     continue
@@ -1084,13 +1106,33 @@ internal class GoV2Client(
                 "The marketplace could not return all owned purchases.", isRetryable = true)
         return StoreReconciliation(purchases, InappifyRestoreResult(restored, already, failed), firstError)
     }
-    private suspend fun syncStoreConsumables(): InappifyConsumableSyncResult {
+    private fun subscriptionRecoveryId(originalId: String, type: PendingStoreProductType,
+        receipt: StorePurchase, context: StoreV2Context, previous: PendingStoreOperation?): String {
+        // Never replace an existing paid attempt, including one owned by another account/store.
+        // Only another occurrence of the same bound subscription gets its own local checkpoint.
+        if (type != PendingStoreProductType.SUBSCRIPTION || previous == null ||
+            previous.productType != PendingStoreProductType.SUBSCRIPTION ||
+            previous.store != context.store || previous.appIdentifier != context.appIdentifier ||
+            previous.appId != context.appId || previous.apiKeyFingerprint != context.apiKeyFingerprint ||
+            previous.customerIdentifierFingerprint != context.customerIdentifierFingerprint ||
+            previous.productIdentifier != receipt.productIdentifier ||
+            previous.evidence.purchaseToken != receipt.purchaseToken ||
+            previous.evidence.purchaseTimeMillis == null ||
+            previous.evidence.purchaseTimeMillis == receipt.purchaseTimeMillis) return originalId
+        val pieces = listOf(context.store, context.appIdentifier, context.appId.toString(),
+            context.apiKeyFingerprint, context.customerIdentifierFingerprint,
+            receipt.productIdentifier, receipt.purchaseToken, receipt.purchaseTimeMillis.toString())
+        return "renewal:${digest(pieces.joinToString("") { "${it.toByteArray(Charsets.UTF_8).size}:$it" })}"
+    }
+    private suspend fun syncStoreConsumables(
+        confirmedCustomerInfo: InappifyCustomerInfo? = snapshot.customerInfo): InappifyConsumableSyncResult {
         if (nativeStoreMarket(snapshot.storePlatform) == null) fail("CONFIGURATION", "UNSUPPORTED_STORE_PLATFORM")
         // Rebuild missing encrypted checkpoints from the store's owned receipts first.
         val pendingConsumableIds = storage.loadPendingStoreOperations().filter {
             it.productType in setOf(PendingStoreProductType.CONSUMABLE, PendingStoreProductType.LEGACY_IN_APP)
         }.mapTo(mutableSetOf()) { it.id }
-        val reconciliation = reconcileStorePurchases(queryOwned = true, explicitRestore = false)
+        val reconciliation = reconcileStorePurchases(queryOwned = true, explicitRestore = false,
+            confirmedCustomerInfo = confirmedCustomerInfo)
         var firstError = reconciliation.error
         val reconciled = reconciliation.purchases
         val coordinator = storeCoordinator ?: fail("CONFIGURATION", "LARAVEL_V2_NOT_CONFIGURED")
@@ -1315,12 +1357,15 @@ internal class GoV2Client(
         if (result is InappifyResult.Success) refreshCustomerInfo()
         return result.withSnapshot()
     }
-    override suspend fun syncPendingConsumablesInternal(): InappifyResult<InappifyConsumableSyncResult> {
-        val result = shared("consumables:${snapshot.appUserIdentifier}") {
+    override suspend fun syncPendingConsumablesInternal(): InappifyResult<InappifyConsumableSyncResult> =
+        syncPendingConsumablesWithServerDedup(deduplicate = true)
+
+    private suspend fun syncPendingConsumablesWithServerDedup(deduplicate: Boolean): InappifyResult<InappifyConsumableSyncResult> {
+        val result = shared("consumables:${snapshot.appUserIdentifier}:$deduplicate") {
             run {
                 requireSession()
                 if (snapshot.storePlatform == "DirectAndroid") syncDirectConsumables().result
-                else syncStoreConsumables()
+                else syncStoreConsumables(if (deduplicate) snapshot.customerInfo else null)
             }
         }
         if (result is InappifyResult.Success) refreshCustomerInfo()
@@ -1342,10 +1387,20 @@ internal class GoV2Client(
             if (loginRecovery is InappifyResult.Failure) return@shared loginRecovery
         }
         val info = refreshCustomerInfo()
+        if (nativeStoreMarket(snapshot.storePlatform) != null) {
+            // Store recovery must not depend on catalog availability. A failed info refresh
+            // also cannot turn stale cached entitlements into a reason to drop owned evidence.
+            val sync = syncPendingConsumablesWithServerDedup(deduplicate = info is InappifyResult.Success)
+            val offerings = refreshOfferings()
+            if (info is InappifyResult.Failure) return@shared info
+            if (sync is InappifyResult.Failure) return@shared sync
+            if (offerings is InappifyResult.Failure) return@shared offerings
+            return@shared InappifyResult.Success(Unit, snapshot)
+        }
         if (info is InappifyResult.Failure) return@shared info
         val offerings = refreshOfferings()
         if (offerings is InappifyResult.Failure) return@shared offerings
-        if (nativeStoreMarket(snapshot.storePlatform) != null || snapshot.storePlatform == "DirectAndroid") {
+        if (snapshot.storePlatform == "DirectAndroid") {
             val sync = syncPendingConsumables()
             if (sync is InappifyResult.Failure) return@shared sync
         }

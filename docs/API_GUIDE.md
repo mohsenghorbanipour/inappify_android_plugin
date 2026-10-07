@@ -1,4 +1,4 @@
-# Android API and behavior guide (3.0.0)
+# Android API and behavior guide (3.1.0)
 
 Both client factories return V2. Keep one authoritative application-scoped
 client, handle `InappifyResult.Success`/`Failure`, and render only its current
@@ -40,7 +40,7 @@ token into a user ID.
 `customerInfo` and `offerings` support `CACHE_ONLY`, `CACHE_FIRST`,
 `NETWORK_FIRST`, `NETWORK_ONLY`; failures do not manufacture verified state.
 Relevant targeting/identity changes invalidate Offerings. Current offering and
-placement selection come from the server. Version 3 sends SDK version `3.0.0`,
+placement selection come from the server. Version 3 sends SDK version `3.1.0`,
 independently of host app version. Old force-version state is not used by V2.
 
 ## Attributes and targeting sync
@@ -76,6 +76,28 @@ An ACK continues after restart even if the delivery disappears from pending.
 Do not clear journals or rewrite old delivery identifiers. `syncPurchases` and
 `restorePurchases` query the selected store; Direct pending deliveries have their
 own V2 recovery path.
+
+Successful Configure schedules native store recovery in the background, including
+when reusing a valid cached session. Bazaar queries both owned in-app purchases
+and subscriptions; Myket queries in-app purchases only. Recovery attempts store
+reconciliation before Offerings, even if CustomerInfo refresh failed. A resource
+failure is still reported by `recover`, but does not block the store attempt.
+
+For newly discovered non-consumables/subscriptions, automatic sync skips a receipt
+only when a verified current-customer entitlement matches both
+`purchaseStoreRefHash = SHA256(purchaseToken UTF-8)` and the exact
+`purchaseStoreTime` in epoch milliseconds. Entitlement activity is irrelevant to
+this comparison. A changed subscription purchase time is a new occurrence even
+if its token is unchanged. Failed CustomerInfo refresh disables this optimization
+for that automatic sync. Missing fields require server verification, not guesses.
+
+Pending journal operations always continue regardless of that comparison.
+Consumable/unknown in-app receipts also continue through the server workflow;
+entitlement metadata alone does not prove delivery or consumption. Account,
+app, marketplace and endpoint bindings remain required. Renewal decisions and
+grants are authoritative server results; the SDK does not invent receipt changes.
+Call `recover` on subsequent foreground/connectivity events to retry interrupted
+work; Configure success does not mean background store recovery has completed.
 
 ## Diagnostics and events
 

@@ -1,4 +1,4 @@
-# Offline cache in 3.0.0
+# Offline cache in 3.1.0
 
 V2 persists verified sessions/resources in an encrypted document. Configure
 validates matching app, endpoint, identity, signed scope and expiry before reusing

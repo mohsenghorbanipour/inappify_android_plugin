@@ -1,6 +1,6 @@
 # inappify_android_plugin
 
-Native Android SDK **3.0.0** for Inappify sessions, purchases, offerings,
+Native Android SDK **3.1.0** for Inappify sessions, purchases, offerings,
 entitlements, attributes and consumable fulfillment. All production routes use
 `/app/v2/`. Both `InappifyClient.create(context)` and
 `InappifyV2Client.create(context)` create the same V2 client.
@@ -25,7 +25,7 @@ maven("https://jitpack.io") {
 ```
 
 ```kotlin
-implementation("com.github.mohsenghorbanipour:inappify_android_plugin:3.0.0")
+implementation("com.github.mohsenghorbanipour:inappify_android_plugin:3.1.0")
 ```
 
 Versions and new tags are exactly `major.minor.patch`, without prefixes or
@@ -82,7 +82,7 @@ val result = client.syncAttributesAndOfferingsIfNeeded()
 The operation flushes attributes before fetching Offerings under the same lock.
 It admits five calls per rolling minute; excess calls return current valid cache
 or a retryable rate-limit failure if no usable cache exists. SDK version sent for
-targeting is exactly `3.0.0`. `currentOffering` and `placements` are server
+targeting is exactly `3.1.0`. `currentOffering` and `placements` are server
 selections; V2 does not evaluate legacy rules locally. Flutter preserves these
 fields in MethodChannel and Dart cache serialization.
 

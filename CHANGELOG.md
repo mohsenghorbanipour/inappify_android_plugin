@@ -1,5 +1,25 @@
 # Changelog
 
+## [3.1.0] - 2026-10-07
+
+- Reconcile the selected native store automatically after Configure, before
+  Offerings refresh, even when CustomerInfo refresh fails. Failed resource
+  refreshes remain failures; Configure does not wait for background recovery.
+- Skip newly discovered non-consumable/subscription receipts only when verified
+  server entitlements match both SHA-256 of the purchase token and its exact
+  purchase time. Missing server metadata and failed info refreshes never suppress
+  evidence. Preserve pending delivery/consume retries and consumable recovery.
+- Distinguish renewed subscription occurrences by token and purchase time. Keep
+  older paid checkpoints and use a scoped local renewal ID when the original
+  subscription attempt is still pending; V2 wire fields and receipt payloads
+  remain unchanged.
+
+- Publish the exact `3.1.0` native/Flutter runtime version without changing
+  public APIs, V2 wire fields or existing paid-operation journal formats.
+- Verification: 403 JVM tests in 31 suites, zero failures; release lint has
+  zero errors and the 15 existing warnings. Live marketplace renewal/payment
+  acceptance remains pending.
+
 ## 3.0.0
 
 - Remove the V1 client, service, transport factory and purchase-companion API.
