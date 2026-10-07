@@ -11,7 +11,7 @@ session Bearer, including every Direct/store commerce operation.
 | Authentication | Pinned Ed25519, signed scope/subject/time, opaque encrypted session, atomic persistence before publication |
 | Identity | Stable anonymous ID, durable login/logout attempts, pending-transition barrier |
 | Resources | Four fetch policies, identity/context invalidation, no Go forceVersion |
-| Targeting | Write-only durable attributes, ordered sync/fetch, server currentOffering/placements retained through Flutter/cache, SDK version exactly 3.1.0 |
+| Targeting | Write-only durable attributes, ordered sync/fetch, server currentOffering/placements retained through Flutter/cache, SDK version exactly 3.2.0 |
 | Commerce | Seven V2 POST routes, current Bearer, no legacy credential/context body fields, receipt evidence preserved |
 | Renewal | Only SESSION_EXPIRED renews/replays once; ambiguous checkout timeout is not automatically replayed |
 | Stores | DirectAndroid, Bazaar, Myket in-app; unsupported/missing routes fail closed |
@@ -23,10 +23,15 @@ Version 3.1.0 reconciles the selected native store after Configure, before
 Offerings refresh. Pending checkpoints always resume; newly discovered
 non-consumable/subscription receipts are skipped only when verified server
 entitlements match both the token hash and purchase time. Consumables and
-unknown product types still reach server verification. The release passes 403
+unknown product types still reach server verification. The current release passes 411
 JVM tests in 31 suites; lint has zero errors and the 15 existing warnings.
 A renewal whose store token and purchase time both remain unchanged requires
 backend verification and cannot be identified from these fields alone.
+
+Version 3.2.0 resolves missing/null/blank payload product types from the native
+subscription query before reconciliation. Explicit conflicting/malformed types
+and account/app bindings remain checked; unknown in-app receipts keep their
+server delivery/consume workflow. No receipt evidence or V2 wire field is changed.
 
 Automated evidence covers synthetic HTTP, lifecycle, storage, billing adapter,
 market binding, targeting serialization and build integration. Instrumentation

@@ -1,7 +1,10 @@
 package com.inappify.sdk.internal.v2
 
 import com.google.gson.JsonArray
+import com.google.gson.JsonElement
+import com.google.gson.JsonNull
 import com.google.gson.JsonObject
+import com.google.gson.JsonPrimitive
 import com.inappify.sdk.*
 import com.inappify.sdk.internal.billing.*
 import com.inappify.sdk.internal.network.*
@@ -88,6 +91,178 @@ class GoAutomaticStoreRecoveryTest {
         val purchase = jsonObject(fixture.commerceTransport.requests.single().jsonBody).getAsJsonObject("purchase")
         assertEquals(fixture.token, purchase.string("token"))
         assertEquals(renewal.purchaseTimeMillis, purchase.number("purchaseTime"))
+    }
+
+    @Test fun subscriptionQueryRecoversMissingOrBlankPayloadTypeWithoutChangingReceipt() = runBlocking {
+        for (payloadType in listOf<JsonElement?>(null, JsonNull.INSTANCE, JsonPrimitive(""), JsonPrimitive(" \t"))) {
+            val fixture = Fixture()
+            fixture.seedConfiguredSession()
+            val receipt = fixture.receipt(type = null, payloadType = payloadType)
+            fixture.owned[StoreProductType.SUBSCRIPTION] = StorePurchaseQueryResult.Success(listOf(receipt))
+
+            assertTrue("payloadType=$payloadType", fixture.automaticRecovery() is InappifyResult.Success)
+
+            val request = fixture.commerceTransport.requests.single()
+            assertEquals("store/purchases", request.path)
+            assertEquals("Bearer go-session-token", request.headers["Authorization"])
+            val body = jsonObject(request.jsonBody)
+            assertEquals(setOf("productIdentifier", "offeringIdentifier", "operation", "purchase"), body.keySet())
+            assertEquals("product", body.string("productIdentifier"))
+            assertEquals("original", body.string("offeringIdentifier"))
+            assertEquals("purchase", body.string("operation"))
+            val purchase = body.getAsJsonObject("purchase")
+            assertEquals(receipt.purchaseToken, purchase.string("token"))
+            assertEquals(receipt.purchaseTimeMillis, purchase.number("purchaseTime"))
+            assertEquals(receipt.developerPayload, purchase.string("developerPayload"))
+            assertEquals(receipt.originalJson, purchase.string("originalJson"))
+            assertEquals(receipt.signature, purchase.string("signature"))
+            if (payloadType == null) assertFalse(jsonObject(purchase.string("developerPayload")).has("productType"))
+            else assertEquals(payloadType, jsonObject(purchase.string("developerPayload")).get("productType"))
+            val pending = fixture.storage.writtenOperations.first { it.phase == PendingStoreOperationPhase.REGISTERING }
+            assertEquals(PendingStoreProductType.SUBSCRIPTION, pending.productType)
+            assertEquals(receipt.developerPayload, pending.evidence.developerPayload)
+            assertTrue(fixture.storage.operations.isEmpty())
+        }
+    }
+
+    @Test fun missingOrBlankSubscriptionPayloadTypeStillDeduplicatesByVerifiedHashAndTime() = runBlocking {
+        for (payloadType in listOf<JsonElement?>(null, JsonNull.INSTANCE, JsonPrimitive(""), JsonPrimitive(" \t"))) {
+            val fixture = Fixture()
+            fixture.setServerReceipt(fixture.token, fixture.signing.now, active = false)
+            fixture.seedConfiguredSession()
+            fixture.owned[StoreProductType.SUBSCRIPTION] = StorePurchaseQueryResult.Success(listOf(
+                fixture.receipt(type = null, payloadType = payloadType)))
+
+            assertTrue("payloadType=$payloadType", fixture.automaticRecovery() is InappifyResult.Success)
+
+            assertTrue(fixture.commerceTransport.requests.isEmpty())
+            assertTrue(fixture.storage.writtenOperations.isEmpty())
+        }
+    }
+
+    @Test fun missingSubscriptionPayloadTypeWithSameTokenAndNewTimeIsSubmitted() = runBlocking {
+        val fixture = Fixture()
+        fixture.setServerReceipt(fixture.token, fixture.signing.now)
+        fixture.seedConfiguredSession()
+        val renewal = fixture.receipt(type = null, time = fixture.signing.now + 1000)
+        fixture.owned[StoreProductType.SUBSCRIPTION] = StorePurchaseQueryResult.Success(listOf(renewal))
+
+        assertTrue(fixture.automaticRecovery() is InappifyResult.Success)
+
+        val purchase = jsonObject(fixture.commerceTransport.requests.single().jsonBody).getAsJsonObject("purchase")
+        assertEquals(fixture.token, purchase.string("token"))
+        assertEquals(renewal.purchaseTimeMillis, purchase.number("purchaseTime"))
+        assertEquals(renewal.developerPayload, purchase.string("developerPayload"))
+        assertEquals(PendingStoreProductType.SUBSCRIPTION,
+            fixture.storage.writtenOperations.first { it.phase == PendingStoreOperationPhase.REGISTERING }.productType)
+    }
+
+    @Test fun missingSubscriptionPayloadTypeRenewalCannotOverwriteEarlierPendingOccurrence() = runBlocking {
+        val fixture = Fixture()
+        fixture.setServerReceipt(fixture.token, fixture.signing.now)
+        fixture.seedConfiguredSession()
+        val oldReceipt = fixture.receipt(type = null)
+        val oldPending = fixture.pending(oldReceipt, PendingStoreProductType.SUBSCRIPTION).copy(
+            phase = PendingStoreOperationPhase.VERIFYING, verificationRequestId = 9,
+            nextRetryAtEpochMillis = Long.MAX_VALUE)
+        fixture.storage.upsertPendingStoreOperation(oldPending)
+        fixture.storage.writtenOperations.clear()
+        val renewal = fixture.receipt(type = null, time = fixture.signing.now + 1000)
+        fixture.owned[StoreProductType.SUBSCRIPTION] = StorePurchaseQueryResult.Success(listOf(renewal))
+
+        assertTrue(fixture.automaticRecovery() is InappifyResult.Failure)
+
+        assertEquals(oldPending, fixture.storage.operations.single())
+        val recovered = fixture.storage.writtenOperations.first { it.evidence.purchaseTimeMillis == renewal.purchaseTimeMillis }
+        assertEquals(PendingStoreProductType.SUBSCRIPTION, recovered.productType)
+        assertTrue(recovered.id.startsWith("renewal:"))
+        assertNotEquals(oldPending.id, recovered.id)
+        val purchase = jsonObject(fixture.commerceTransport.requests.single().jsonBody).getAsJsonObject("purchase")
+        assertEquals(renewal.developerPayload, purchase.string("developerPayload"))
+        assertEquals(renewal.purchaseTimeMillis, purchase.number("purchaseTime"))
+        assertFalse(jsonObject(purchase.string("developerPayload")).has("productType"))
+    }
+
+    @Test fun missingSubscriptionPayloadTypeKeepsTwoOwnedOccurrencesInSeparateJournals() = runBlocking {
+        val fixture = Fixture()
+        fixture.seedConfiguredSession()
+        val first = fixture.receipt(type = null)
+        val second = fixture.receipt(type = null, time = fixture.signing.now + 1000)
+        fixture.owned[StoreProductType.SUBSCRIPTION] = StorePurchaseQueryResult.Success(listOf(first, second, second))
+
+        assertTrue(fixture.automaticRecovery() is InappifyResult.Success)
+
+        assertEquals(listOf(first.purchaseTimeMillis, second.purchaseTimeMillis),
+            fixture.commerceTransport.requests.map { jsonObject(it.jsonBody).getAsJsonObject("purchase").number("purchaseTime") })
+        val written = fixture.storage.writtenOperations.filter { it.phase == PendingStoreOperationPhase.REGISTERING }
+        assertEquals(2, written.size)
+        assertTrue(written.all { it.productType == PendingStoreProductType.SUBSCRIPTION })
+        assertEquals("attempt-1", written.first().id)
+        assertTrue(written.last().id.startsWith("renewal:"))
+        assertTrue(fixture.storage.operations.isEmpty())
+    }
+
+    @Test fun inAppQueryWithMissingOrBlankPayloadTypeDoesNotInferEntitlementDelivery() = runBlocking {
+        for (payloadType in listOf<JsonElement?>(null, JsonNull.INSTANCE, JsonPrimitive(""), JsonPrimitive(" \t"))) {
+            val fixture = Fixture()
+            fixture.setServerReceipt(fixture.token, fixture.signing.now)
+            fixture.seedConfiguredSession()
+            val receipt = fixture.receipt(type = null, payloadType = payloadType)
+            fixture.owned[StoreProductType.IN_APP] = StorePurchaseQueryResult.Success(listOf(receipt))
+            fixture.commerceTransport.handler = { request ->
+                assertEquals("store/purchases", request.path)
+                fixture.commerceTransport.response(jsonObject("""{"status":true,"data":{"purchase":{"status":"ALREADY_PROCESSED"}}}"""))
+            }
+            val grants = CopyOnWriteArrayList<Long>()
+
+            assertTrue("payloadType=$payloadType", fixture.automaticRecovery(InappifyConsumableDeliveryHandler { delivery ->
+                grants += delivery.deliveryId
+                InappifyDeliveryResult.DELIVERED
+            }) is InappifyResult.Success)
+
+            val request = fixture.commerceTransport.requests.single()
+            assertEquals("Bearer go-session-token", request.headers["Authorization"])
+            assertEquals(receipt.developerPayload,
+                jsonObject(request.jsonBody).getAsJsonObject("purchase").string("developerPayload"))
+            assertEquals(PendingStoreProductType.LEGACY_IN_APP,
+                fixture.storage.writtenOperations.first { it.phase == PendingStoreOperationPhase.REGISTERING }.productType)
+            assertTrue(grants.isEmpty())
+            assertTrue(fixture.storage.operations.isEmpty())
+        }
+    }
+
+    @Test fun presentPayloadTypeConflictingWithStoreQueryIsNeverForwarded() = runBlocking {
+        for ((storeType, payloadType) in listOf(
+                StoreProductType.SUBSCRIPTION to InappifyProductType.CONSUMABLE.name,
+                StoreProductType.SUBSCRIPTION to InappifyProductType.NON_CONSUMABLE.name,
+                StoreProductType.SUBSCRIPTION to "UNRECOGNIZED",
+                StoreProductType.IN_APP to InappifyProductType.SUBSCRIPTION.name)) {
+            val fixture = Fixture()
+            fixture.seedConfiguredSession()
+            fixture.owned[storeType] = StorePurchaseQueryResult.Success(listOf(
+                fixture.receipt(type = null, payloadType = JsonPrimitive(payloadType))))
+
+            assertTrue("$storeType/$payloadType", fixture.automaticRecovery() is InappifyResult.Success)
+
+            assertTrue(fixture.commerceTransport.requests.isEmpty())
+            assertTrue(fixture.storage.writtenOperations.isEmpty())
+        }
+    }
+
+    @Test fun malformedPresentPayloadTypeIsNotTreatedAsMissing() = runBlocking {
+        for (storeType in listOf(StoreProductType.SUBSCRIPTION, StoreProductType.IN_APP)) {
+            for (payloadType in listOf(JsonObject(), JsonArray(), JsonPrimitive(5), JsonPrimitive(true))) {
+                val fixture = Fixture()
+                fixture.seedConfiguredSession()
+                fixture.owned[storeType] = StorePurchaseQueryResult.Success(listOf(
+                    fixture.receipt(type = null, payloadType = payloadType)))
+
+                assertTrue("$storeType/$payloadType", fixture.automaticRecovery() is InappifyResult.Success)
+
+                assertTrue(fixture.commerceTransport.requests.isEmpty())
+                assertTrue(fixture.storage.writtenOperations.isEmpty())
+            }
+        }
     }
 
     @Test fun twoOwnedSubscriptionOccurrencesWithOneTokenAreSubmittedWithoutOverwriting() = runBlocking {
@@ -387,14 +562,15 @@ class GoAutomaticStoreRecoveryTest {
             }) }
         }
 
-        fun receipt(type: InappifyProductType = InappifyProductType.NON_CONSUMABLE,
-            time: Long = signing.now, bindingSubject: String = signing.subject): StorePurchase {
+        fun receipt(type: InappifyProductType? = InappifyProductType.NON_CONSUMABLE,
+            time: Long = signing.now, bindingSubject: String = signing.subject,
+            payloadType: JsonElement? = type?.let { JsonPrimitive(it.name) }): StorePurchase {
             val fingerprint = goStoreFingerprint(storage.session!!.apiKeyFingerprint!!, signing.config.commerceApiBaseUrl)
             val payload = JsonObject().apply {
                 addProperty("productIdentifier", "product")
                 addProperty("offeringIdentifier", "original")
                 addProperty("nativePackageIdentifier", "package")
-                addProperty("productType", type.name)
+                if (payloadType != null) add("productType", payloadType)
                 addProperty("recoveryBinding", digest("$fingerprint:${digest(bindingSubject)}"))
                 addProperty("attemptId", "attempt-1")
             }

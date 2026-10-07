@@ -1012,13 +1012,22 @@ internal class GoV2Client(
                                     if (explicitRestore) failed++
                                     continue
                                 }
-                                val declaredType = runCatching { payload.get("productType")?.asString }.getOrNull()
+                                val typeField = payload.get("productType")?.takeUnless { it.isJsonNull }
+                                if (typeField != null && (!typeField.isJsonPrimitive || !typeField.asJsonPrimitive.isString)) {
+                                    if (explicitRestore) failed++
+                                    continue
+                                }
+                                val declaredType = typeField?.asString?.takeUnless(String::isBlank)
+                                // Older bound receipts may omit productType. The subscription query
+                                // establishes that type; an in-app query cannot distinguish consumables.
+                                val resolvedType = declaredType ?: if (storeType == StoreProductType.SUBSCRIPTION)
+                                    InappifyProductType.SUBSCRIPTION.name else null
                                 val offeringId = runCatching { payload.string("offeringIdentifier") }.getOrNull()
                                 val payloadProduct = runCatching { payload.string("productIdentifier") }.getOrNull()
                                 val attempt = runCatching { payload.string("attemptId") }.getOrNull()
                                 val compatibleType = when (storeType) {
-                                    StoreProductType.SUBSCRIPTION -> declaredType == InappifyProductType.SUBSCRIPTION.name
-                                    StoreProductType.IN_APP -> declaredType == null || declaredType in setOf(
+                                    StoreProductType.SUBSCRIPTION -> resolvedType == InappifyProductType.SUBSCRIPTION.name
+                                    StoreProductType.IN_APP -> resolvedType == null || resolvedType in setOf(
                                         InappifyProductType.CONSUMABLE.name, InappifyProductType.NON_CONSUMABLE.name)
                                 }
                                 if (!compatibleType || payloadProduct != receipt.productIdentifier || offeringId.isNullOrBlank() ||
@@ -1030,7 +1039,7 @@ internal class GoV2Client(
                                 // Pending journals above must still finish delivery/consume checkpoints.
                                 // A renewed subscription may retain its token but change its purchase time.
                                 val purchaseRefHash = digest(receipt.purchaseToken)
-                                if (!explicitRestore && declaredType in setOf(
+                                if (!explicitRestore && resolvedType in setOf(
                                         InappifyProductType.NON_CONSUMABLE.name, InappifyProductType.SUBSCRIPTION.name) &&
                                     confirmedCustomerInfo?.entitlements.orEmpty().any {
                                         it.purchaseStoreRefHash == purchaseRefHash &&
@@ -1042,7 +1051,7 @@ internal class GoV2Client(
                                 // Locally verified receipts outlive catalog changes. Forward their
                                 // original bound offering; only the server can accept the payment.
                                 // Explicit restore never grants consumables from owned inventory.
-                                val type = when (declaredType) {
+                                val type = when (resolvedType) {
                                     InappifyProductType.CONSUMABLE.name -> PendingStoreProductType.CONSUMABLE
                                     InappifyProductType.NON_CONSUMABLE.name -> PendingStoreProductType.NON_CONSUMABLE
                                     InappifyProductType.SUBSCRIPTION.name -> PendingStoreProductType.SUBSCRIPTION

@@ -1,5 +1,21 @@
 # Changelog
 
+## [3.2.0] - 2026-10-07
+
+- Recover bound subscription receipts whose older developer payload omits or
+  leaves productType empty. Resolve their type from the marketplace subscription
+  query for hash/time deduplication and durable renewal checkpoints, without
+  rewriting the signed receipt or V2 wire fields. Unknown in-app receipts still
+  require the existing server delivery/consume workflow; explicit conflicting
+  types and application/account bindings remain checked.
+
+- Report exact SDK/runtime version `3.2.0` and align the native dependency and
+  Dart/iOS runtime version. Public APIs, MethodChannel and V2 journal formats
+  remain unchanged.
+- Verification: 411 JVM tests in 31 suites, zero failures/errors/skips, including
+  eight new missing-type recovery regressions. Release lint has zero errors and
+  the 15 existing warnings. Live marketplace/backend acceptance remains pending.
+
 ## [3.1.0] - 2026-10-07
 
 - Reconcile the selected native store automatically after Configure, before
