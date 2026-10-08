@@ -831,6 +831,9 @@ internal class GoV2Client(
             return storePurchaseResult(outcome, packageIdentifier)
         }
         val host = activity ?: fail("VALIDATION", "STORE_UI_HOST_REQUIRED")
+        val appId = context.appId?.takeIf { it > 0 } ?: fail("CONFIGURATION", "STORE_APP_ID_REQUIRED")
+        val nativePackageIdentifier = packageIdentifier?.takeIf(String::isNotBlank)
+            ?: fail("VALIDATION", "PACKAGE_IDENTIFIER_REQUIRED")
         val adapter = createBillingAdapter(context.marketKey, context.market)
         val developerPayload = JsonObject().apply {
             addProperty("offeringIdentifier", request.offeringIdentifier)
@@ -839,6 +842,9 @@ internal class GoV2Client(
             addProperty("attemptId", attemptId)
             request.productType?.let { addProperty("productType", it.name) }
             addProperty("recoveryBinding", digest("${context.apiKeyFingerprint}:${context.customerIdentifierFingerprint}"))
+            addProperty("purchaseBinding", goPurchaseBinding(appId, context.appIdentifier,
+                context.customerIdentifierFingerprint, request.productIdentifier,
+                request.offeringIdentifier, nativePackageIdentifier))
         }.toString()
         val receipt = try {
             when (val billed = adapter.purchase(StoreUiHost.from(host), StorePurchaseRequest(
@@ -1034,6 +1040,27 @@ internal class GoV2Client(
                                     attempt == null || !attempt.matches(Regex("[A-Za-z0-9_.:-]{1,128}"))) {
                                     if (explicitRestore) failed++
                                     continue
+                                }
+                                // Older receipts keep their existing recovery path. New bindings
+                                // must match the original package as well as the customer/product.
+                                if (payload.has("purchaseBinding")) {
+                                    val binding = payload.get("purchaseBinding")?.takeIf {
+                                        it.isJsonPrimitive && it.asJsonPrimitive.isString
+                                    }?.asString
+                                    val packageId = payload.get("nativePackageIdentifier")?.takeIf {
+                                        it.isJsonPrimitive && it.asJsonPrimitive.isString
+                                    }?.asString
+                                    val expected = context.appId?.takeIf { it > 0 }?.let { appId ->
+                                        packageId?.takeIf(String::isNotBlank)?.let { packageIdentifier ->
+                                            goPurchaseBinding(appId, context.appIdentifier,
+                                                context.customerIdentifierFingerprint, receipt.productIdentifier,
+                                                offeringId, packageIdentifier)
+                                        }
+                                    }
+                                    if (expected == null || binding != expected) {
+                                        if (explicitRestore) failed++
+                                        continue
+                                    }
                                 }
                                 // Only a server-confirmed occurrence suppresses a newly discovered receipt.
                                 // Pending journals above must still finish delivery/consume checkpoints.

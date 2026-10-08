@@ -1,6 +1,7 @@
 package com.inappify.sdk.internal.v2
 
 import android.app.Activity
+import com.google.gson.JsonParser
 import com.inappify.sdk.*
 import com.inappify.sdk.internal.billing.*
 import com.inappify.sdk.internal.platform.AppMetadata
@@ -22,6 +23,7 @@ class GoBillingLifecycleTest(private val nativeMarket: InappifyMarket) {
     private val commerceTransport = V2Transport()
     private val storage = BillingStore()
     private var adapterCloses = 0
+    private val nativeRequests = mutableListOf<StorePurchaseRequest>()
     private val started = CompletableDeferred<Unit>()
     private var purchase: suspend () -> StoreBillingResult = { started.complete(Unit); awaitCancellation() }
     private var query: suspend () -> StorePurchaseQueryResult = { started.complete(Unit); awaitCancellation() }
@@ -40,7 +42,10 @@ class GoBillingLifecycleTest(private val nativeMarket: InappifyMarket) {
                 assertEquals(nativeMarket, market)
                 object : StoreBillingAdapter {
                 private var closed = false
-                override suspend fun purchase(uiHost: StoreUiHost, request: StorePurchaseRequest) = this@GoBillingLifecycleTest.purchase.invoke()
+                override suspend fun purchase(uiHost: StoreUiHost, request: StorePurchaseRequest): StoreBillingResult {
+                    nativeRequests += request
+                    return this@GoBillingLifecycleTest.purchase.invoke()
+                }
                 override suspend fun queryPurchases(productType: StoreProductType) = this@GoBillingLifecycleTest.query.invoke()
                 override suspend fun consume(purchase: StorePurchase) = this@GoBillingLifecycleTest.consume.invoke()
                 override fun close() { if (!closed) { closed = true; adapterCloses++ } }
@@ -50,6 +55,23 @@ class GoBillingLifecycleTest(private val nativeMarket: InappifyMarket) {
     private suspend fun configure(sdk: GoV2Client) {
         assertTrue(sdk.configure(InappifyOptions("fixture-public-key", fixture.subject)) is InappifyResult.Success)
         assertTrue(sdk.refreshOfferings() is InappifyResult.Success)
+    }
+
+    @Test fun purchasePayloadBindsTheSelectedCustomerAppProductAndPackage() = runBlocking {
+        purchase = { StoreBillingResult.Cancelled }
+        client().use { sdk ->
+            configure(sdk)
+            sdk.purchase(Activity(), InappifyPurchaseRequest("product", "default",
+                idempotencyKey = "binding-attempt", productType = InappifyProductType.CONSUMABLE))
+            val payload = JsonParser.parseString(nativeRequests.single().developerPayload).asJsonObject
+            val customer = MessageDigest.getInstance("SHA-256").digest(fixture.subject.toByteArray(Charsets.UTF_8))
+                .joinToString("") { "%02x".format(it) }
+            assertEquals(goPurchaseBinding(12, "com.example.mobile", customer, "product", "default", "package"),
+                payload.get("purchaseBinding").asString)
+            assertEquals("package", payload.get("nativePackageIdentifier").asString)
+            assertTrue(payload.has("recoveryBinding"))
+            assertTrue(commerceTransport.requests.isEmpty())
+        }
     }
 
     @Test fun closeCancelsAnOwnedPurchaseScopeWithoutCancellingTheHostParent() = runBlocking {

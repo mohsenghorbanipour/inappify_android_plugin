@@ -20,6 +20,35 @@ import org.junit.Test
 
 /** Exercises configure's real background recovery, including a verified cached restart. */
 class GoAutomaticStoreRecoveryTest {
+    @Test fun recoveryPreservesValidNewBindingsForBothMarkets() = runBlocking {
+        for (market in listOf(InappifyMarket.BAZAAR, InappifyMarket.MYKET)) {
+            val fixture = Fixture(market)
+            fixture.seedConfiguredSession()
+            val binding = goPurchaseBinding(12, "com.example.mobile", fixture.digest(fixture.signing.subject),
+                "product", "original", "package")
+            val receipt = fixture.receipt(purchaseBinding = JsonPrimitive(binding))
+            fixture.owned[StoreProductType.IN_APP] = StorePurchaseQueryResult.Success(listOf(receipt))
+
+            assertTrue(fixture.automaticRecovery() is InappifyResult.Success)
+            val purchase = jsonObject(fixture.commerceTransport.requests.single().jsonBody).getAsJsonObject("purchase")
+            assertEquals(receipt.developerPayload, purchase.string("developerPayload"))
+        }
+    }
+
+    @Test fun recoveryRejectsMalformedOrMismatchedNewBindingsForBothMarkets() = runBlocking {
+        for (market in listOf(InappifyMarket.BAZAAR, InappifyMarket.MYKET)) {
+            for (binding in listOf(JsonNull.INSTANCE, JsonPrimitive(123), JsonPrimitive("v1:wrong"))) {
+                val fixture = Fixture(market)
+                fixture.seedConfiguredSession()
+                fixture.owned[StoreProductType.IN_APP] = StorePurchaseQueryResult.Success(
+                    listOf(fixture.receipt(purchaseBinding = binding)))
+
+                assertTrue(fixture.automaticRecovery() is InappifyResult.Success)
+                assertTrue(fixture.commerceTransport.requests.isEmpty())
+            }
+        }
+    }
+
     @Test fun freshOnlineConfigureQueriesAndRecoversOwnedReceipt() = runBlocking {
         val fixture = Fixture()
         fixture.seedConfiguredSession()
@@ -564,7 +593,8 @@ class GoAutomaticStoreRecoveryTest {
 
         fun receipt(type: InappifyProductType? = InappifyProductType.NON_CONSUMABLE,
             time: Long = signing.now, bindingSubject: String = signing.subject,
-            payloadType: JsonElement? = type?.let { JsonPrimitive(it.name) }): StorePurchase {
+            payloadType: JsonElement? = type?.let { JsonPrimitive(it.name) },
+            purchaseBinding: JsonElement? = null): StorePurchase {
             val fingerprint = goStoreFingerprint(storage.session!!.apiKeyFingerprint!!, signing.config.commerceApiBaseUrl)
             val payload = JsonObject().apply {
                 addProperty("productIdentifier", "product")
@@ -573,6 +603,7 @@ class GoAutomaticStoreRecoveryTest {
                 if (payloadType != null) add("productType", payloadType)
                 addProperty("recoveryBinding", digest("$fingerprint:${digest(bindingSubject)}"))
                 addProperty("attemptId", "attempt-1")
+                if (purchaseBinding != null) add("purchaseBinding", purchaseBinding)
             }
             return StorePurchase("fixture-order-$time", token, payload.toString(), "com.example.mobile",
                 "product", time, "fixture-original-$time", "fixture-signature")
