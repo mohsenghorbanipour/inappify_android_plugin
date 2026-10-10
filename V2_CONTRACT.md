@@ -11,8 +11,8 @@ session Bearer, including every Direct/store commerce operation.
 | Authentication | Pinned Ed25519, signed scope/subject/time, opaque encrypted session, atomic persistence before publication |
 | Identity | Stable anonymous ID, durable login/logout attempts, pending-transition barrier |
 | Resources | Four fetch policies, identity/context invalidation, no Go forceVersion |
-| Targeting | Write-only durable attributes, ordered sync/fetch, server currentOffering/placements retained through Flutter/cache, SDK version exactly 3.3.0 |
-| Commerce | Seven V2 POST routes, current Bearer, no legacy credential/context body fields, receipt evidence preserved |
+| Targeting | Write-only durable attributes, ordered sync/fetch, server currentOffering/placements retained through Flutter/cache, SDK version exactly 3.4.0 |
+| Commerce | Eight V2 POST routes, current Bearer, no legacy credential/context body fields, receipt evidence preserved |
 | Renewal | Only SESSION_EXPIRED renews/replays once; ambiguous checkout timeout is not automatically replayed |
 | Stores | DirectAndroid, Bazaar, Myket in-app; unsupported/missing routes fail closed |
 | Fulfillment | Durable host grant before ACK, selected-store consume/report, bound checkpoint recovery after restart |
@@ -40,12 +40,14 @@ formats remain unchanged. The release passes 416 JVM tests in 32 suites and
 all 95 build/publication tasks; lint has zero errors and one existing receiver
 warning. Instrumentation was compiled, not executed.
 
-Payloadless Bazaar subscription recovery is enabled by default through
+Version 3.4.0 adds payloadless Bazaar subscription recovery, enabled by default through
 `InappifyOptions.enableSubscriptionRecoveryWithoutPayload` (default true).
 It requires the separate commerce route and ownership contract documented in
 [SUBSCRIPTION_RECOVERY.md](docs/SUBSCRIPTION_RECOVERY.md). Deploy the Laravel
 counterpart before releasing this SDK; applications can explicitly opt out with
-`false`. Ordinary binding checks are not relaxed.
+`false`. Ordinary binding checks are not relaxed. All 444 JVM tests in 34 suites
+and 95 build/publication tasks pass; lint has zero errors and one existing
+receiver warning. Instrumentation is compiled, not executed.
 
 Automated evidence covers synthetic HTTP, lifecycle, storage, billing adapter,
 market binding, targeting serialization and build integration. Instrumentation

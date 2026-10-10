@@ -1,4 +1,19 @@
-# Upgrading to 3.3.0
+# Upgrading to 3.4.0
+
+Version 3.4.0 recovers Bazaar subscription inventory receipts with genuinely empty
+or whitespace-only developer payload through `store/subscriptions/recover`.
+Recovery is enabled by default; deploy the matching commerce endpoint and its
+ownership checks before enabling it in an application. The additional
+`InappifyOptions` constructor accepts
+`enableSubscriptionRecoveryWithoutPayload = false` to opt out. Existing
+constructors retain their binary signatures. Invalid nonempty payloads never
+fall back to this path; Myket and in-app recovery keep their existing workflows.
+
+The matching Flutter option is forwarded to native Android only. Existing bound
+receipts keep `store/purchases` and their binding checks. Original signed receipt
+evidence is never rewritten. Older SDKs cannot read the new durable
+`RECOVER_SUBSCRIPTION` operation: drain or preserve its encrypted queue before a
+downgrade. See [the backend contract and rollout requirements](SUBSCRIPTION_RECOVERY.md).
 
 Version 3.3.0 includes `purchaseBinding` in new Bazaar/Myket receipts and checks
 it during recovery when present. It binds the app, customer, product, offering
@@ -8,7 +23,7 @@ their existing recovery path. No public API or MethodChannel change is needed.
 Version 3.1.0 adds automatic selected-store reconciliation after Configure.
 Android integrations on 3.0.0 only need the dependency upgrade; the public API,
 MethodChannel and existing V2 journal formats are unchanged. Flutter must use
-package/native dependency and Dart runtime version 3.3.0 together. Background
+package/native dependency and Dart runtime version 3.4.0 together. Background
 recovery resumes pending checkpoints and checks new owned receipts against
 verified CustomerInfo before submitting missing evidence. Real store/backend
 acceptance remains required.
@@ -56,11 +71,11 @@ removes a key. Use `queueAttributes` followed by
 `syncAttributesAndOfferingsIfNeeded` before selecting a targeted paywall.
 Offerings include server-selected `currentOffering` and `placements`; no V1 rule
 fallback is run by the V2 client. Configure and Offerings report SDK version
-`3.3.0` exactly. App version is a separate value.
+`3.4.0` exactly. App version is a separate value.
 
 ## Flutter and iOS
 
-Flutter package/native dependency and Dart SDK version are 3.3.0.
+Flutter package/native dependency and Dart SDK version are 3.4.0.
 `InappifyMobileProtocol` contains only `goV2`, which is the default. Android uses
 the native SDK through MethodChannel. iOS uses the V2 Dart implementation and
 Keychain storage; Bazaar/Myket Android billing is not invoked on iOS. The legacy

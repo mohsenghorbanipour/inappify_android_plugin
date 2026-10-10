@@ -143,11 +143,13 @@ class GoAutomaticStoreRecoveryTest {
         fixture.seedConfiguredSession()
         val first = fixture.unboundReceipt()
         fixture.owned[StoreProductType.SUBSCRIPTION] = StorePurchaseQueryResult.Success(listOf(first, first))
-        fixture.commerceTransport.handler = { fixture.commerceTransport.failureResponse(503) }
+        // Keep the checkpoint beyond the coordinator's bounded in-process wait.
+        fixture.commerceTransport.handler = { TransportResult.Response(HttpResponse(
+            503, """{"status":false}""", null, headers = mapOf("Retry-After" to "60"))) }
         assertTrue(fixture.automaticRecovery() is InappifyResult.Failure)
         val saved = fixture.storage.operations.single()
         assertEquals(PendingStoreOperationType.RECOVER_SUBSCRIPTION, saved.operation)
-        assertTrue(saved.nextRetryAtEpochMillis!! > fixture.signing.now)
+        assertTrue(saved.nextRetryAtEpochMillis!! >= fixture.signing.now + 60_000)
         assertEquals(1, fixture.commerceTransport.requests.size)
 
         fixture.owned[StoreProductType.SUBSCRIPTION] = StorePurchaseQueryResult.Success(listOf(
@@ -733,7 +735,7 @@ class GoAutomaticStoreRecoveryTest {
                     assertEquals(setOf("productIdentifier", "purchase"), jsonObject(request.jsonBody).keySet())
                 commerceTransport.response(jsonObject("""{"status":true,"data":{"purchase":{"status":"COMPLETED"}}}"""))
             }
-            if (recoveryEnabled) acceptRecovery()
+            if (recoveryEnabled == true) acceptRecovery()
         }
 
         fun acceptRecovery() {

@@ -1,5 +1,25 @@
 # Changelog
 
+## [3.4.0] - 2026-10-10
+
+- Recover payloadless Bazaar subscription receipts through the dedicated V2
+  `store/subscriptions/recover` endpoint using original signed store evidence.
+  The server resolves verified linkage and ownership; no offering or owner is
+  guessed locally. Existing bound receipts retain all binding checks and routes.
+- Enable this recovery by default and add the optional
+  `enableSubscriptionRecoveryWithoutPayload` configuration, preserving existing
+  constructor/default-argument signatures. Opting out retains durable checkpoints
+  and stops discovery, submission and polling for this operation.
+- Persist scoped subscription recovery operations, require source/product scope
+  in responses, and quarantine permanent ownership/evidence rejections without
+  consuming subscriptions or granting access from unverified store data.
+- Report exact native and matching Flutter SDK version `3.4.0`. Deploy the
+  [required backend contract](docs/SUBSCRIPTION_RECOVERY.md) before application
+  rollout; old SDKs cannot read pending operations of the new kind.
+- Verification: all 444 JVM tests in 34 suites and 95 release/publication tasks
+  pass; lint has zero errors and one existing receiver warning. Instrumentation
+  compiles; live marketplace/backend acceptance remains unverified.
+
 ## [3.3.0] - 2026-10-10
 
 - Add a versioned purchase binding to new Bazaar/Myket developer payloads. Bind

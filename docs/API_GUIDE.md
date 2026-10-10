@@ -1,4 +1,4 @@
-# Android API and behavior guide (3.3.0)
+# Android API and behavior guide (3.4.0)
 
 Both client factories return V2. Keep one authoritative application-scoped
 client, handle `InappifyResult.Success`/`Failure`, and render only its current
@@ -18,6 +18,7 @@ Commerce uses `https://api.inappify.com/app/v2/`.
 | `consumable-deliveries/pending` | empty object |
 | `consumable-deliveries/{id}/delivered` | empty object |
 | `store/purchases` | productIdentifier, offeringIdentifier, operation, purchase evidence |
+| `store/subscriptions/recover` | productIdentifier, original signed subscription purchase evidence |
 | `store/verifications/{id}/status` | empty object |
 | `store/deliveries/{id}/delivered` | empty object |
 | `store/deliveries/{id}/consume-result` | result and optional errorCode |
@@ -40,7 +41,7 @@ token into a user ID.
 `customerInfo` and `offerings` support `CACHE_ONLY`, `CACHE_FIRST`,
 `NETWORK_FIRST`, `NETWORK_ONLY`; failures do not manufacture verified state.
 Relevant targeting/identity changes invalidate Offerings. Current offering and
-placement selection come from the server. Version 3 sends SDK version `3.3.0`,
+placement selection come from the server. Version 3 sends SDK version `3.4.0`,
 independently of host app version. Old force-version state is not used by V2.
 
 ## Attributes and targeting sync
@@ -108,6 +109,14 @@ versioned `v1:` result. This is a binding format version, not a V1 API route.
 Recovery validates this field when present and forwards the original evidence
 unchanged. Receipts without it retain all existing recovery guards. No new
 public method or Flutter channel argument is required.
+
+Bazaar subscription receipts with a genuinely empty/whitespace payload use the
+server-owned subscription recovery endpoint. The feature is enabled by default;
+`InappifyOptions(enableSubscriptionRecoveryWithoutPayload = false, ...)` stops
+discovery, submission and polling while retaining pending checkpoints. The
+backend must resolve verified subscription linkage and the original customer;
+the client sends no guessed offering, owner or package context. Nonempty invalid
+payloads cannot enter this path. See [the exact contract](SUBSCRIPTION_RECOVERY.md).
 
 Pending journal operations always continue regardless of that comparison.
 Consumable/unknown in-app receipts also continue through the server workflow;
