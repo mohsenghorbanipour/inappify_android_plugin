@@ -40,6 +40,13 @@ formats remain unchanged. The release passes 416 JVM tests in 32 suites and
 all 95 build/publication tasks; lint has zero errors and one existing receiver
 warning. Instrumentation was compiled, not executed.
 
+Payloadless Bazaar subscription recovery is enabled by default through
+`InappifyOptions.enableSubscriptionRecoveryWithoutPayload` (default true).
+It requires the separate commerce route and ownership contract documented in
+[SUBSCRIPTION_RECOVERY.md](docs/SUBSCRIPTION_RECOVERY.md). Deploy the Laravel
+counterpart before releasing this SDK; applications can explicitly opt out with
+`false`. Ordinary binding checks are not relaxed.
+
 Automated evidence covers synthetic HTTP, lifecycle, storage, billing adapter,
 market binding, targeting serialization and build integration. Instrumentation
 compilation is distinct from execution. Live marketplace/backend acceptance is

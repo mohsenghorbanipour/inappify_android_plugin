@@ -232,6 +232,38 @@ class PendingStoreOperationCodecTest {
             updatedAtEpochMillis = 1_500L,
         )
 
+    @Test fun codecRoundTripsPayloadlessRecoveryWithoutInventingAnOffering() {
+        val original = completeOperation()
+        val operation = original.copy(operation = PendingStoreOperationType.RECOVER_SUBSCRIPTION,
+            productType = PendingStoreProductType.SUBSCRIPTION, offeringIdentifier = null,
+            phase = PendingStoreOperationPhase.VERIFYING, deliveryId = null, deliveryAcknowledged = false,
+            consumeResult = null, consumeErrorCode = null,
+            evidence = original.evidence.copy(developerPayload = ""))
+        val decoded = PendingStoreOperationCodec.decode(PendingStoreOperationCodec.encode(listOf(operation))).single()
+        assertEquals(operation, decoded)
+        assertEquals(null, decoded.offeringIdentifier)
+        assertEquals("", decoded.evidence.developerPayload)
+    }
+
+    @Test fun recoveryQueueCannotContainAnotherMarketOrAProvidedBinding() {
+        val original = completeOperation()
+        val operation = original.copy(operation = PendingStoreOperationType.RECOVER_SUBSCRIPTION,
+            productType = PendingStoreProductType.SUBSCRIPTION, offeringIdentifier = null,
+            phase = PendingStoreOperationPhase.REGISTERING, verificationRequestId = null,
+            deliveryId = null, deliveryAcknowledged = false, consumeResult = null, consumeErrorCode = null,
+            evidence = original.evidence.copy(developerPayload = ""))
+        for (invalid in listOf<() -> PendingStoreOperation>(
+            { operation.copy(store = "myket") },
+            { operation.copy(offeringIdentifier = "guessed-offering") },
+            { operation.copy(evidence = operation.evidence.copy(developerPayload = "{}")) },
+            { operation.copy(evidence = operation.evidence.copy(signature = "")) },
+            { operation.copy(phase = PendingStoreOperationPhase.CONSUME_REQUIRED) },
+        )) {
+            try { invalid(); org.junit.Assert.fail("Unsafe recovery operation was accepted") }
+            catch (_: IllegalArgumentException) { }
+        }
+    }
+
     private fun completeTombstone(
         purchaseTokenFingerprint: String,
     ): RejectedStoreEvidenceTombstone = RejectedStoreEvidenceTombstone(

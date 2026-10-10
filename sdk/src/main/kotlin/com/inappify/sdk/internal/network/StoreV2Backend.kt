@@ -48,6 +48,15 @@ internal class StorePurchaseApiRequest(
             ")"
 }
 
+/** No client-selected owner, offering, package, or entitlement is accepted for recovery. */
+internal class StoreSubscriptionRecoveryApiRequest(
+    internal val productIdentifier: String,
+    internal val purchase: StorePurchaseEvidence,
+) {
+    override fun toString(): String =
+        "StoreSubscriptionRecoveryApiRequest(productIdentifier=<redacted>, purchase=$purchase)"
+}
+
 /** Wire request for polling one durable store-verification operation. */
 internal class StoreVerificationStatusApiRequest(
     internal val verificationRequestId: Long,
@@ -168,6 +177,8 @@ internal sealed interface StoreServiceResult {
 
 internal interface StoreV2Backend {
     suspend fun submitStorePurchase(request: StorePurchaseApiRequest): StoreServiceResult
+    suspend fun recoverStoreSubscription(request: StoreSubscriptionRecoveryApiRequest): StoreServiceResult =
+        StoreServiceResult.Failure(ServiceFailureKind.UNKNOWN)
     suspend fun getStoreVerificationStatus(request: StoreVerificationStatusApiRequest): StoreServiceResult
     suspend fun markStoreDeliveryDelivered(request: StoreDeliveryApiRequest): StoreServiceResult
     suspend fun reportStoreConsumeResult(request: StoreConsumeResultApiRequest): StoreServiceResult

@@ -15,6 +15,26 @@ public class InappifyOptions public constructor(
     public val country: String? = null,
     public val appVersion: String? = null,
 ) {
+    /**
+     * Enabled by default; the commerce service must support
+     * `store/subscriptions/recover`. Set false to disable recovery explicitly.
+     * This never relaxes purchase-binding checks.
+     */
+    public var enableSubscriptionRecoveryWithoutPayload: Boolean = true
+        private set
+
+    /** Keeps the existing constructor and its Kotlin default-argument ABI intact. */
+    public constructor(
+        apiKey: String,
+        appUserIdentifier: String? = null,
+        market: InappifyMarket? = null,
+        marketKey: String? = null,
+        country: String? = null,
+        appVersion: String? = null,
+        enableSubscriptionRecoveryWithoutPayload: Boolean,
+    ) : this(apiKey, appUserIdentifier, market, marketKey, country, appVersion) {
+        this.enableSubscriptionRecoveryWithoutPayload = enableSubscriptionRecoveryWithoutPayload
+    }
 
     /** Returns a representation that is safe for development logs. */
     public override fun toString(): String =

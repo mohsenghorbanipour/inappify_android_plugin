@@ -20,6 +20,216 @@ import org.junit.Test
 
 /** Exercises configure's real background recovery, including a verified cached restart. */
 class GoAutomaticStoreRecoveryTest {
+    @Test fun payloadlessSubscriptionRecoveryCanBeExplicitlyDisabled() = runBlocking {
+        val fixture = Fixture(recoveryEnabled = false)
+        fixture.seedConfiguredSession()
+        fixture.owned[StoreProductType.SUBSCRIPTION] = StorePurchaseQueryResult.Success(listOf(fixture.unboundReceipt()))
+        assertTrue(fixture.automaticRecovery() is InappifyResult.Success)
+        assertTrue(fixture.commerceTransport.requests.isEmpty())
+        assertTrue(fixture.storage.operations.isEmpty())
+    }
+
+    @Test fun payloadlessSubscriptionRecoveryIsEnabledWithoutAnAppOption() = runBlocking {
+        val fixture = Fixture()
+        assertTrue(fixture.options.enableSubscriptionRecoveryWithoutPayload)
+        fixture.seedConfiguredSession()
+        fixture.owned[StoreProductType.SUBSCRIPTION] = StorePurchaseQueryResult.Success(listOf(fixture.unboundReceipt()))
+        fixture.acceptRecovery()
+
+        assertTrue(fixture.automaticRecovery() is InappifyResult.Success)
+        assertEquals("store/subscriptions/recover", fixture.commerceTransport.requests.single().path)
+        assertTrue(fixture.storage.operations.isEmpty())
+    }
+
+    @Test fun payloadlessSubscriptionUsesOnlyRecoveryRouteWithUnchangedEvidence() = runBlocking {
+        for (payload in listOf("", " \t")) {
+            val fixture = Fixture(recoveryEnabled = true)
+            fixture.seedConfiguredSession()
+            val receipt = fixture.unboundReceipt(payload = payload)
+            fixture.owned[StoreProductType.SUBSCRIPTION] = StorePurchaseQueryResult.Success(listOf(receipt))
+            assertTrue(fixture.automaticRecovery() is InappifyResult.Success)
+            val request = fixture.commerceTransport.requests.single()
+            assertEquals("store/subscriptions/recover", request.path)
+            assertEquals("Bearer go-session-token", request.headers["Authorization"])
+            val body = jsonObject(request.jsonBody)
+            assertEquals(setOf("productIdentifier", "purchase"), body.keySet())
+            val evidence = body.getAsJsonObject("purchase")
+            assertEquals(receipt.developerPayload, evidence.string("developerPayload"))
+            assertEquals(receipt.originalJson, evidence.string("originalJson"))
+            assertEquals(receipt.signature, evidence.string("signature"))
+            assertEquals(receipt.purchaseToken, evidence.string("token"))
+            assertEquals(receipt.purchaseTimeMillis, evidence.number("purchaseTime"))
+            assertTrue(fixture.storage.operations.isEmpty())
+            assertTrue(fixture.storage.writtenOperations.all { it.offeringIdentifier == null })
+        }
+    }
+
+    @Test fun malformedOrUnboundNonemptyPayloadNeverDowngradesToRecovery() = runBlocking {
+        for (payload in listOf("{", "null", "{}", "{\"purchaseBinding\":\"v1:invalid\"}")) {
+            val fixture = Fixture(recoveryEnabled = true)
+            fixture.seedConfiguredSession()
+            fixture.owned[StoreProductType.SUBSCRIPTION] = StorePurchaseQueryResult.Success(listOf(
+                fixture.unboundReceipt(payload = payload)))
+            assertTrue(fixture.automaticRecovery() is InappifyResult.Success)
+            assertTrue(fixture.commerceTransport.requests.isEmpty())
+        }
+    }
+
+    @Test fun optInDoesNotBypassExistingPurchaseBindingChecks() = runBlocking {
+        val fixture = Fixture(recoveryEnabled = true)
+        fixture.seedConfiguredSession()
+        fixture.owned[StoreProductType.SUBSCRIPTION] = StorePurchaseQueryResult.Success(listOf(
+            fixture.receipt(type = InappifyProductType.SUBSCRIPTION, purchaseBinding = JsonPrimitive("v1:wrong"))))
+        assertTrue(fixture.automaticRecovery() is InappifyResult.Success)
+        assertTrue(fixture.commerceTransport.requests.isEmpty())
+    }
+
+    @Test fun optInPreservesTheBoundPurchaseRoute() = runBlocking {
+        val fixture = Fixture(recoveryEnabled = true)
+        fixture.seedConfiguredSession()
+        fixture.owned[StoreProductType.SUBSCRIPTION] = StorePurchaseQueryResult.Success(listOf(
+            fixture.receipt(type = InappifyProductType.SUBSCRIPTION)))
+        fixture.commerceTransport.handler = { request ->
+            assertEquals("store/purchases", request.path)
+            fixture.commerceTransport.response(jsonObject("""{"status":true,"data":{"purchase":{"status":"COMPLETED"}}}"""))
+        }
+        assertTrue(fixture.automaticRecovery() is InappifyResult.Success)
+        assertEquals("store/purchases", fixture.commerceTransport.requests.single().path)
+    }
+
+    @Test fun serverOwnershipRejectionIsQuarantinedWithoutGrantOrRepeatedSubmission() = runBlocking {
+        val fixture = Fixture(recoveryEnabled = true)
+        fixture.seedConfiguredSession()
+        fixture.owned[StoreProductType.SUBSCRIPTION] = StorePurchaseQueryResult.Success(listOf(fixture.unboundReceipt()))
+        fixture.commerceTransport.handler = { TransportResult.Response(HttpResponse(422,
+            """{"status":false,"code":"SUBSCRIPTION_OWNER_MISMATCH"}""", null)) }
+        assertTrue(fixture.automaticRecovery() is InappifyResult.Failure)
+        assertEquals(1, fixture.storage.tombstones.size)
+        assertTrue(fixture.storage.operations.isEmpty())
+        assertTrue(fixture.automaticRecovery() is InappifyResult.Success)
+        assertEquals(1, fixture.commerceTransport.requests.size)
+        assertTrue(fixture.storage.operations.isEmpty())
+    }
+
+    @Test fun payloadlessInAppReceiptsNeverUseSubscriptionRecovery() = runBlocking {
+        for (market in listOf(InappifyMarket.BAZAAR, InappifyMarket.MYKET)) {
+            val fixture = Fixture(market, recoveryEnabled = true)
+            fixture.seedConfiguredSession()
+            fixture.owned[StoreProductType.IN_APP] = StorePurchaseQueryResult.Success(listOf(fixture.unboundReceipt()))
+            assertTrue(fixture.automaticRecovery() is InappifyResult.Success)
+            assertTrue(fixture.commerceTransport.requests.isEmpty())
+        }
+    }
+
+    @Test fun missingSignatureOrOriginalReceiptCannotEnterRecoveryQueue() = runBlocking {
+        for (missing in listOf("signature", "receipt", "time")) {
+            val fixture = Fixture(recoveryEnabled = true)
+            fixture.seedConfiguredSession()
+            val receipt = fixture.unboundReceipt().let {
+                StorePurchase(it.orderIdentifier, it.purchaseToken, it.developerPayload, it.packageName,
+                    it.productIdentifier, if (missing == "time") 0 else it.purchaseTimeMillis,
+                    if (missing == "receipt") "" else it.originalJson,
+                    if (missing == "signature") "" else it.signature)
+            }
+            fixture.owned[StoreProductType.SUBSCRIPTION] = StorePurchaseQueryResult.Success(listOf(receipt))
+            assertTrue(fixture.automaticRecovery() is InappifyResult.Failure)
+            assertTrue(fixture.commerceTransport.requests.isEmpty())
+            assertTrue(fixture.storage.operations.isEmpty())
+        }
+    }
+
+    @Test fun payloadlessRenewalRetriesDurablyAndSeparatesNewTokenOrTime() = runBlocking {
+        val fixture = Fixture(recoveryEnabled = true)
+        fixture.seedConfiguredSession()
+        val first = fixture.unboundReceipt()
+        fixture.owned[StoreProductType.SUBSCRIPTION] = StorePurchaseQueryResult.Success(listOf(first, first))
+        fixture.commerceTransport.handler = { fixture.commerceTransport.failureResponse(503) }
+        assertTrue(fixture.automaticRecovery() is InappifyResult.Failure)
+        val saved = fixture.storage.operations.single()
+        assertEquals(PendingStoreOperationType.RECOVER_SUBSCRIPTION, saved.operation)
+        assertTrue(saved.nextRetryAtEpochMillis!! > fixture.signing.now)
+        assertEquals(1, fixture.commerceTransport.requests.size)
+
+        fixture.owned[StoreProductType.SUBSCRIPTION] = StorePurchaseQueryResult.Success(listOf(
+            first, fixture.unboundReceipt(time = fixture.signing.now + 1000),
+            fixture.unboundReceipt(token = "renewed-store-token")))
+        fixture.commerceTransport.requests.clear()
+        fixture.acceptRecovery()
+        assertTrue(fixture.automaticRecovery() is InappifyResult.Failure) // First occurrence is not due yet.
+        assertEquals(saved, fixture.storage.operations.single())
+        assertEquals(2, fixture.commerceTransport.requests.size)
+        assertEquals(3, fixture.storage.writtenOperations.map { it.id }.distinct().size)
+
+        fixture.storage.upsertPendingStoreOperation(saved.copy(nextRetryAtEpochMillis = fixture.signing.now))
+        fixture.owned.clear()
+        fixture.commerceTransport.requests.clear()
+        assertTrue(fixture.automaticRecovery() is InappifyResult.Success)
+        assertEquals("store/subscriptions/recover", fixture.commerceTransport.requests.single().path)
+        assertTrue(fixture.storage.operations.isEmpty())
+    }
+
+    @Test fun disablingRecoveryRetainsCheckpointWithoutSendingIt() = runBlocking {
+        val fixture = Fixture(recoveryEnabled = true)
+        fixture.seedConfiguredSession()
+        fixture.owned[StoreProductType.SUBSCRIPTION] = StorePurchaseQueryResult.Success(listOf(fixture.unboundReceipt()))
+        fixture.commerceTransport.handler = { fixture.commerceTransport.failureResponse(503) }
+        assertTrue(fixture.automaticRecovery() is InappifyResult.Failure)
+        val saved = fixture.storage.operations.single()
+        fixture.options = InappifyOptions("public-fixture-key", fixture.signing.subject,
+            enableSubscriptionRecoveryWithoutPayload = false)
+        fixture.owned.clear()
+        fixture.commerceTransport.requests.clear()
+        assertTrue(fixture.automaticRecovery() is InappifyResult.Failure)
+        assertEquals(saved, fixture.storage.operations.single())
+        assertTrue(fixture.commerceTransport.requests.isEmpty())
+    }
+
+    @Test fun recoveryCannotReplayCheckpointBoundToAnotherCustomer() = runBlocking {
+        val fixture = Fixture(recoveryEnabled = true)
+        fixture.seedConfiguredSession()
+        fixture.owned[StoreProductType.SUBSCRIPTION] = StorePurchaseQueryResult.Success(listOf(fixture.unboundReceipt()))
+        fixture.commerceTransport.handler = { fixture.commerceTransport.failureResponse(503) }
+        assertTrue(fixture.automaticRecovery() is InappifyResult.Failure)
+        val saved = fixture.storage.operations.single().copy(customerIdentifierFingerprint = "other-customer")
+        fixture.storage.upsertPendingStoreOperation(saved)
+        fixture.owned.clear()
+        fixture.commerceTransport.requests.clear()
+        assertTrue(fixture.automaticRecovery() is InappifyResult.Success)
+        assertEquals(saved, fixture.storage.operations.single())
+        assertTrue(fixture.commerceTransport.requests.isEmpty())
+    }
+
+    @Test fun recoveryRequiresMatchingServerSourceAndProductAndNeverConsumes() = runBlocking {
+        for (state in listOf(
+            """{"status":"COMPLETED"}""",
+            """{"status":"COMPLETED","source":"myket","productIdentifier":"product"}""",
+            """{"status":"COMPLETED","source":"bazar","productIdentifier":"other"}""",
+            """{"status":"DELIVERY_REQUIRED","source":"bazar","productIdentifier":"product","deliveryId":8}""")) {
+            val fixture = Fixture(recoveryEnabled = true)
+            fixture.seedConfiguredSession()
+            fixture.owned[StoreProductType.SUBSCRIPTION] = StorePurchaseQueryResult.Success(listOf(fixture.unboundReceipt()))
+            fixture.commerceTransport.handler = { fixture.commerceTransport.response(
+                jsonObject("""{"status":true,"data":{"purchase":$state}}""")) }
+            assertTrue(fixture.automaticRecovery() is InappifyResult.Failure)
+            assertEquals(1, fixture.storage.operations.size)
+            assertTrue(fixture.commerceTransport.requests.all { it.path == "store/subscriptions/recover" })
+        }
+    }
+
+    @Test fun payloadlessServerReceiptDedupAndExplicitRestoreUseDifferentPolicies() = runBlocking {
+        val fixture = Fixture(recoveryEnabled = true)
+        fixture.setServerReceipt(fixture.token, fixture.signing.now)
+        fixture.seedConfiguredSession()
+        fixture.owned[StoreProductType.SUBSCRIPTION] = StorePurchaseQueryResult.Success(listOf(fixture.unboundReceipt()))
+        assertTrue(fixture.automaticRecovery() is InappifyResult.Success)
+        assertTrue(fixture.commerceTransport.requests.isEmpty())
+        fixture.client(backgroundRecovery = false).use { sdk ->
+            assertTrue(sdk.configure(fixture.options) is InappifyResult.Success)
+            assertTrue(sdk.restorePurchases() is InappifyResult.Success)
+        }
+        assertEquals("store/subscriptions/recover", fixture.commerceTransport.requests.single().path)
+    }
+
     @Test fun recoveryPreservesValidNewBindingsForBothMarkets() = runBlocking {
         for (market in listOf(InappifyMarket.BAZAAR, InappifyMarket.MYKET)) {
             val fixture = Fixture(market)
@@ -490,10 +700,12 @@ class GoAutomaticStoreRecoveryTest {
         assertTrue(fixture.commerceTransport.requests.isEmpty())
     }
 
-    private class Fixture(val market: InappifyMarket = InappifyMarket.BAZAAR) {
+    private class Fixture(val market: InappifyMarket = InappifyMarket.BAZAAR, recoveryEnabled: Boolean? = null) {
         val signing = SigningFixture()
         val token = "automatic-recovery-store-token"
-        val options = InappifyOptions("public-fixture-key", signing.subject)
+        var options = if (recoveryEnabled == null) InappifyOptions("public-fixture-key", signing.subject)
+            else InappifyOptions("public-fixture-key", signing.subject,
+                enableSubscriptionRecoveryWithoutPayload = recoveryEnabled)
         val storage = RecoveryStore()
         val events = CopyOnWriteArrayList<String>()
         val sdkTransport = RecordingTransport { events += "sdk:$it" }
@@ -516,10 +728,32 @@ class GoAutomaticStoreRecoveryTest {
                 else -> error("Unexpected SDK request ${request.path}")
             } }
             commerceTransport.handler = { request ->
-                assertEquals("store/purchases", request.path)
+                assertTrue(request.path in setOf("store/purchases", "store/subscriptions/recover"))
+                if (request.path == "store/subscriptions/recover")
+                    assertEquals(setOf("productIdentifier", "purchase"), jsonObject(request.jsonBody).keySet())
                 commerceTransport.response(jsonObject("""{"status":true,"data":{"purchase":{"status":"COMPLETED"}}}"""))
             }
+            if (recoveryEnabled) acceptRecovery()
         }
+
+        fun acceptRecovery() {
+            commerceTransport.handler = { request ->
+                assertEquals("store/subscriptions/recover", request.path)
+                commerceTransport.response(jsonObject("""{"status":true,"data":{"purchase":{
+                    "status":"COMPLETED","source":"bazar","productIdentifier":"product"}}}"""))
+            }
+        }
+
+        fun unboundReceipt(payload: String = "", token: String = this.token, time: Long = signing.now): StorePurchase =
+            StorePurchase("renewal-order-$time", token, payload, "com.example.mobile", "product", time,
+                JsonObject().apply {
+                    addProperty("orderId", "renewal-order-$time")
+                    addProperty("purchaseToken", token)
+                    addProperty("developerPayload", payload)
+                    addProperty("packageName", "com.example.mobile")
+                    addProperty("productId", "product")
+                    addProperty("purchaseTime", time)
+                }.toString(), "signed-renewal-fixture")
 
         private fun envelope(): JsonObject {
             var signedInfo: JsonObject? = null
@@ -631,10 +865,16 @@ class GoAutomaticStoreRecoveryTest {
         @Volatile var session: PersistedSession? = null
         val operations = CopyOnWriteArrayList<PendingStoreOperation>()
         val writtenOperations = CopyOnWriteArrayList<PendingStoreOperation>()
+        val tombstones = CopyOnWriteArrayList<RejectedStoreEvidenceTombstone>()
         override suspend fun load(): PersistedSession? = session
         override suspend fun save(session: PersistedSession): Boolean { this.session = session; return true }
         override suspend fun clear(): Boolean { session = null; return true }
         override suspend fun loadPendingStoreOperations(): List<PendingStoreOperation> = operations.toList()
+        override suspend fun loadRejectedStoreEvidenceTombstones(): List<RejectedStoreEvidenceTombstone> = tombstones.toList()
+        override suspend fun upsertRejectedStoreEvidenceTombstone(tombstone: RejectedStoreEvidenceTombstone): Boolean {
+            tombstones.addIfAbsent(tombstone)
+            return true
+        }
         override suspend fun upsertPendingStoreOperation(operation: PendingStoreOperation): Boolean = synchronized(operations) {
             operations.removeAll { it.id == operation.id }
             operations += operation

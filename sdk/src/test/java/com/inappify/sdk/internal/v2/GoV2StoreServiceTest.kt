@@ -9,6 +9,21 @@ import org.junit.Test
 class GoV2StoreServiceTest {
     private val transport = V2Transport()
     private val service = GoV2StoreService(GoApi(transport, { 0L }, {})) { "fixture-go-session" }
+    @Test fun subscriptionRecoveryNeverSendsGuessedContextOrMutatesSignedEvidence() = runBlocking {
+        transport.handler = { transport.response(jsonObject("""{"status":true,"data":{"purchase":{
+            "status":"PROCESSING","source":"bazar","productIdentifier":"sku","verificationRequestId":9}}}""")) }
+        val receipt = "{\"developerPayload\":\"\",\"purchaseToken\":\"receipt-token\"}"
+        val result = service.recoverStoreSubscription(StoreSubscriptionRecoveryApiRequest("sku",
+            StorePurchaseEvidence("receipt-token", 123L, "order", "com.example.app", "", receipt, "signature")))
+        assertTrue(result is StoreServiceResult.Response)
+        val request = transport.requests.single()
+        assertEquals("store/subscriptions/recover", request.path)
+        assertEquals("Bearer fixture-go-session", request.headers["Authorization"])
+        val body = jsonObject(request.jsonBody)
+        assertEquals(setOf("productIdentifier", "purchase"), body.keySet())
+        assertEquals(receipt, body.getAsJsonObject("purchase").string("originalJson"))
+        assertEquals("", body.getAsJsonObject("purchase").string("developerPayload"))
+    }
     private suspend fun status(state: String): StoreServiceResult {
         transport.handler = { transport.response(jsonObject("""{"status":true,"data":$state}""")) }
         return service.getStoreVerificationStatus(StoreVerificationStatusApiRequest(9))
