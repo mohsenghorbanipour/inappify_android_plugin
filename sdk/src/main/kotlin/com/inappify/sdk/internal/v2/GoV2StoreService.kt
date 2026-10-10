@@ -27,6 +27,20 @@ internal class GoV2StoreService(
             })
         }, nestedPurchase = true)
 
+    override suspend fun recoverStoreSubscription(request: StoreSubscriptionRecoveryApiRequest): StoreServiceResult =
+        call("store/subscriptions/recover", JsonObject().apply {
+            addProperty("productIdentifier", request.productIdentifier)
+            add("purchase", JsonObject().apply {
+                addProperty("token", request.purchase.token)
+                request.purchase.purchaseTime?.let { addProperty("purchaseTime", it) }
+                request.purchase.orderId?.let { addProperty("orderId", it) }
+                request.purchase.packageName?.let { addProperty("packageName", it) }
+                request.purchase.developerPayload?.let { addProperty("developerPayload", it) }
+                request.purchase.originalJson?.let { addProperty("originalJson", it) }
+                request.purchase.signature?.let { addProperty("signature", it) }
+            })
+        }, nestedPurchase = true)
+
     override suspend fun getStoreVerificationStatus(request: StoreVerificationStatusApiRequest): StoreServiceResult =
         call("store/verifications/${request.verificationRequestId}/status", JsonObject())
 

@@ -140,7 +140,7 @@ internal class GoV2Client(
     }
 
     override suspend fun configure(options: InappifyOptions): InappifyResult<Unit> =
-        shared("configure:${fingerprint(options)}:${options.appUserIdentifier}:${options.country}:${options.appVersion}") { run {
+        shared("configure:${fingerprint(options)}:${options.appUserIdentifier}:${options.country}:${options.appVersion}:${options.enableSubscriptionRecoveryWithoutPayload}") { run {
             validateOptions(options)
             if (this.options != null && fingerprint(this.options!!) != fingerprint(options))
                 fail("CONFIGURATION", "CREATE_NEW_CLIENT_FOR_APP_CHANGE")
@@ -797,7 +797,8 @@ internal class GoV2Client(
             session.number("appId"), document.get("country")?.asString ?: "IR",
             document.get("appVersion")?.asString ?: metadata.get().versionName,
             null, opt.marketKey?.takeIf(String::isNotBlank)
-                ?: session.get("storeInfo")?.takeUnless { it.isJsonNull }?.asString?.takeIf(String::isNotBlank), market)
+                ?: session.get("storeInfo")?.takeUnless { it.isJsonNull }?.asString?.takeIf(String::isNotBlank), market,
+            subscriptionRecoveryEnabled = opt.enableSubscriptionRecoveryWithoutPayload)
     }
     private fun storeFingerprint(value: InappifyOptions): String =
         goStoreFingerprint(fingerprint(value), config.commerceApiBaseUrl)
@@ -1010,15 +1011,27 @@ internal class GoV2Client(
                                     if (receipt.purchaseToken in knownTokens || !knownSubscriptionReceipts.add(
                                             receipt.purchaseToken to receipt.purchaseTimeMillis)) continue
                                 } else if (!knownTokens.add(receipt.purchaseToken)) continue
+                                // Only a genuinely absent payload may use server-resolved ownership.
+                                // Malformed JSON or a bad binding must never downgrade to this path.
+                                val unboundSubscription = receipt.developerPayload.isBlank() &&
+                                    context.market == InappifyMarket.BAZAAR && storeType == StoreProductType.SUBSCRIPTION
+                                if (unboundSubscription && !context.subscriptionRecoveryEnabled) continue
+                                if (unboundSubscription && (receipt.purchaseTimeMillis <= 0L ||
+                                        receipt.originalJson.isBlank() || receipt.signature.isBlank())) {
+                                    if (explicitRestore) failed++
+                                    else firstError = firstError ?: InappifyError(InappifyErrorCode.PURCHASE_VERIFICATION_FAILED,
+                                        "Subscription recovery requires the original signed store receipt.")
+                                    continue
+                                }
                                 val payload = runCatching { JsonParser.parseString(receipt.developerPayload).asJsonObject }
                                     .getOrNull()
                                 val expectedBinding = digest("${context.apiKeyFingerprint}:${context.customerIdentifierFingerprint}")
-                                if (payload == null || runCatching { payload.get("recoveryBinding")?.asString }
-                                        .getOrNull() != expectedBinding) {
+                                if (!unboundSubscription && (payload == null || runCatching { payload.get("recoveryBinding")?.asString }
+                                        .getOrNull() != expectedBinding)) {
                                     if (explicitRestore) failed++
                                     continue
                                 }
-                                val typeField = payload.get("productType")?.takeUnless { it.isJsonNull }
+                                val typeField = payload?.get("productType")?.takeUnless { it.isJsonNull }
                                 if (typeField != null && (!typeField.isJsonPrimitive || !typeField.asJsonPrimitive.isString)) {
                                     if (explicitRestore) failed++
                                     continue
@@ -1028,22 +1041,24 @@ internal class GoV2Client(
                                 // establishes that type; an in-app query cannot distinguish consumables.
                                 val resolvedType = declaredType ?: if (storeType == StoreProductType.SUBSCRIPTION)
                                     InappifyProductType.SUBSCRIPTION.name else null
-                                val offeringId = runCatching { payload.string("offeringIdentifier") }.getOrNull()
-                                val payloadProduct = runCatching { payload.string("productIdentifier") }.getOrNull()
-                                val attempt = runCatching { payload.string("attemptId") }.getOrNull()
+                                val offeringId = runCatching { payload?.string("offeringIdentifier") }.getOrNull()
+                                val payloadProduct = runCatching { payload?.string("productIdentifier") }.getOrNull()
+                                val attempt = if (unboundSubscription) subscriptionRecoveryReceiptId(receipt, context)
+                                    else runCatching { payload?.string("attemptId") }.getOrNull()
                                 val compatibleType = when (storeType) {
                                     StoreProductType.SUBSCRIPTION -> resolvedType == InappifyProductType.SUBSCRIPTION.name
                                     StoreProductType.IN_APP -> resolvedType == null || resolvedType in setOf(
                                         InappifyProductType.CONSUMABLE.name, InappifyProductType.NON_CONSUMABLE.name)
                                 }
-                                if (!compatibleType || payloadProduct != receipt.productIdentifier || offeringId.isNullOrBlank() ||
+                                if (!compatibleType || (!unboundSubscription &&
+                                        (payloadProduct != receipt.productIdentifier || offeringId.isNullOrBlank())) ||
                                     attempt == null || !attempt.matches(Regex("[A-Za-z0-9_.:-]{1,128}"))) {
                                     if (explicitRestore) failed++
                                     continue
                                 }
                                 // Older receipts keep their existing recovery path. New bindings
                                 // must match the original package as well as the customer/product.
-                                if (payload.has("purchaseBinding")) {
+                                if (payload?.has("purchaseBinding") == true) {
                                     val binding = payload.get("purchaseBinding")?.takeIf {
                                         it.isJsonPrimitive && it.asJsonPrimitive.isString
                                     }?.asString
@@ -1054,7 +1069,7 @@ internal class GoV2Client(
                                         packageId?.takeIf(String::isNotBlank)?.let { packageIdentifier ->
                                             goPurchaseBinding(appId, context.appIdentifier,
                                                 context.customerIdentifierFingerprint, receipt.productIdentifier,
-                                                offeringId, packageIdentifier)
+                                                requireNotNull(offeringId), packageIdentifier)
                                         }
                                     }
                                     if (expected == null || binding != expected) {
@@ -1084,7 +1099,7 @@ internal class GoV2Client(
                                     InappifyProductType.SUBSCRIPTION.name -> PendingStoreProductType.SUBSCRIPTION
                                     else -> pendingType
                                 }
-                                val originalOperationId = if (explicitRestore) "restore:${digest(if (context.market == InappifyMarket.MYKET) "myket:${receipt.purchaseToken}" else receipt.purchaseToken).take(64)}" else attempt
+                                val originalOperationId = if (explicitRestore && !unboundSubscription) "restore:${digest(if (context.market == InappifyMarket.MYKET) "myket:${receipt.purchaseToken}" else receipt.purchaseToken).take(64)}" else attempt
                                 val operationId = subscriptionRecoveryId(originalOperationId, type, receipt,
                                     context, operationsById[originalOperationId])
                                 // A recovered callback must not overwrite another paid receipt's journal.
@@ -1094,7 +1109,8 @@ internal class GoV2Client(
                                 }
                                 val pending = PendingStoreOperation(
                                     id = operationId,
-                                    operation = if (explicitRestore) PendingStoreOperationType.RESTORE
+                                    operation = if (unboundSubscription) PendingStoreOperationType.RECOVER_SUBSCRIPTION
+                                        else if (explicitRestore) PendingStoreOperationType.RESTORE
                                         else PendingStoreOperationType.PURCHASE,
                                     store = context.store, customerToken = context.customerToken,
                                     customerIdentifierFingerprint = context.customerIdentifierFingerprint,
@@ -1105,7 +1121,7 @@ internal class GoV2Client(
                                     productType = type,
                                     evidence = PendingStorePurchaseEvidence(receipt.purchaseToken,
                                         receipt.orderIdentifier.takeIf(String::isNotBlank), receipt.packageName,
-                                        receipt.developerPayload.takeIf(String::isNotBlank),
+                                        if (unboundSubscription) receipt.developerPayload else receipt.developerPayload.takeIf(String::isNotBlank),
                                         receipt.originalJson.takeIf(String::isNotBlank),
                                         receipt.signature.takeIf(String::isNotBlank), receipt.purchaseTimeMillis),
                                     createdAtEpochMillis = now())
@@ -1141,6 +1157,12 @@ internal class GoV2Client(
             firstError = firstError ?: InappifyError(InappifyErrorCode.STORE_UNAVAILABLE,
                 "The marketplace could not return all owned purchases.", isRetryable = true)
         return StoreReconciliation(purchases, InappifyRestoreResult(restored, already, failed), firstError)
+    }
+    private fun subscriptionRecoveryReceiptId(receipt: StorePurchase, context: StoreV2Context): String {
+        val pieces = listOf(context.store, context.appIdentifier, context.appId.toString(),
+            context.apiKeyFingerprint, context.customerIdentifierFingerprint,
+            receipt.productIdentifier, receipt.purchaseToken, receipt.purchaseTimeMillis.toString())
+        return "subscription-recovery:${digest(pieces.joinToString("") { "${it.toByteArray(Charsets.UTF_8).size}:$it" })}"
     }
     private fun subscriptionRecoveryId(originalId: String, type: PendingStoreProductType,
         receipt: StorePurchase, context: StoreV2Context, previous: PendingStoreOperation?): String {

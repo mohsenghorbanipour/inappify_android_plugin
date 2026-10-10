@@ -23,6 +23,7 @@ import com.inappify.sdk.internal.network.StorePurchaseOperation
 import com.inappify.sdk.internal.network.StorePurchaseState
 import com.inappify.sdk.internal.network.StorePurchaseStatus
 import com.inappify.sdk.internal.network.StoreServiceResult
+import com.inappify.sdk.internal.network.StoreSubscriptionRecoveryApiRequest
 import com.inappify.sdk.internal.network.StoreVerificationStatusApiRequest
 import com.inappify.sdk.internal.storage.PendingStoreConsumeResult
 import com.inappify.sdk.internal.storage.PendingStoreOperation
@@ -50,6 +51,7 @@ internal class StoreV2Context(
     internal val forceVersion: Long?,
     internal val marketKey: String?,
     internal val market: InappifyMarket = InappifyMarket.BAZAAR,
+    internal val subscriptionRecoveryEnabled: Boolean = false,
 ) {
     internal val store: String get() = market.storeId
 }
@@ -195,6 +197,14 @@ internal class StoreV2Coordinator(
         maxPolls: Int,
     ): StoreV2Outcome {
         require(maxPolls >= 0) { "maxPolls must not be negative." }
+        if (initial.operation == PendingStoreOperationType.RECOVER_SUBSCRIPTION &&
+            !context.subscriptionRecoveryEnabled) {
+            return StoreV2Outcome.Deferred(initial, null, null, InappifyError(
+                InappifyErrorCode.INVALID_CONFIGURATION,
+                "Subscription recovery requires commerce-service support and explicit opt-in.",
+                details = mapOf("operation" to "subscriptionRecovery", "outcomeMayHaveCommitted" to true),
+            ))
+        }
         var operation = initial
         var forceVersion: Long? = null
         var polls = 0
@@ -210,8 +220,9 @@ internal class StoreV2Coordinator(
                             error = null,
                         )
                     }
+                    val recovery = operation.operation == PendingStoreOperationType.RECOVER_SUBSCRIPTION
                     val offeringIdentifier = operation.offeringIdentifier
-                    if (offeringIdentifier.isNullOrBlank()) {
+                    if (!recovery && offeringIdentifier.isNullOrBlank()) {
                         return permanentFailure(
                             operation = operation,
                             code = InappifyErrorCode.INVALID_CONFIGURATION,
@@ -219,31 +230,42 @@ internal class StoreV2Coordinator(
                             remove = true,
                         )
                     }
+                    val evidence = operation.evidence.let { saved ->
+                        StorePurchaseEvidence(
+                            token = saved.purchaseToken,
+                            purchaseTime = saved.purchaseTimeMillis,
+                            orderId = saved.orderId,
+                            packageName = saved.packageName,
+                            developerPayload = saved.developerPayload,
+                            originalJson = saved.originalJson,
+                            signature = saved.signature,
+                        )
+                    }
+                    val response = if (recovery) {
+                        service.recoverStoreSubscription(
+                            StoreSubscriptionRecoveryApiRequest(
+                                productIdentifier = operation.productIdentifier,
+                                purchase = evidence,
+                            ),
+                        )
+                    } else {
+                        service.submitStorePurchase(
+                            StorePurchaseApiRequest(
+                                productIdentifier = operation.productIdentifier,
+                                offeringIdentifier = requireNotNull(offeringIdentifier),
+                                operation = when (operation.operation) {
+                                    PendingStoreOperationType.PURCHASE -> StorePurchaseOperation.PURCHASE
+                                    PendingStoreOperationType.RESTORE -> StorePurchaseOperation.RESTORE
+                                    PendingStoreOperationType.RECOVER_SUBSCRIPTION ->
+                                        error("Recovery cannot use the purchase endpoint")
+                                },
+                                purchase = evidence,
+                            ),
+                        )
+                    }
                     when (
                         val evaluated = evaluate(
-                            service.submitStorePurchase(
-                                StorePurchaseApiRequest(
-                                    productIdentifier = operation.productIdentifier,
-                                    offeringIdentifier = offeringIdentifier,
-                                    operation = when (operation.operation) {
-                                        PendingStoreOperationType.PURCHASE ->
-                                            StorePurchaseOperation.PURCHASE
-                                        PendingStoreOperationType.RESTORE ->
-                                            StorePurchaseOperation.RESTORE
-                                    },
-                                    purchase = operation.evidence.let { evidence ->
-                                        StorePurchaseEvidence(
-                                            token = evidence.purchaseToken,
-                                            purchaseTime = evidence.purchaseTimeMillis,
-                                            orderId = evidence.orderId,
-                                            packageName = evidence.packageName,
-                                            developerPayload = evidence.developerPayload,
-                                            originalJson = evidence.originalJson,
-                                            signature = evidence.signature,
-                                        )
-                                    },
-                                ),
-                            ),
+                            response,
                             operation,
                             context,
                         )
@@ -944,12 +966,14 @@ internal class StoreV2Coordinator(
                     ApiEvaluation.Reject(
                         error = error,
                         requiresRejectionTombstone =
-                            result.isPermanentValidationRejection(payload),
+                            result.isPermanentValidationRejection(payload, operation),
                     )
                 }
             } else {
                 val received = requireNotNull(payload.state)
-                val wrongScope = (received.source != null && received.source != operation.store) ||
+                val wrongScope = (operation.operation == PendingStoreOperationType.RECOVER_SUBSCRIPTION &&
+                    (received.source != operation.store || received.productIdentifier != operation.productIdentifier)) ||
+                    (received.source != null && received.source != operation.store) ||
                     (received.productIdentifier != null && received.productIdentifier != operation.productIdentifier) ||
                     (received.verificationRequestId != null && operation.verificationRequestId != null &&
                         received.verificationRequestId != operation.verificationRequestId) ||
@@ -981,12 +1005,15 @@ internal class StoreV2Coordinator(
 
     private fun StoreServiceResult.Response.isPermanentValidationRejection(
         payload: com.inappify.sdk.internal.network.StoreBackendResponse,
+        operation: PendingStoreOperation,
     ): Boolean {
         if (isAuthorizationRejection(payload)) return false
         return payload.errorCode
             ?.trim()
             ?.uppercase()
-            ?.let(PERMANENT_VALIDATION_ERROR_CODES::contains) == true
+            ?.let { code -> code in PERMANENT_VALIDATION_ERROR_CODES ||
+                (operation.operation == PendingStoreOperationType.RECOVER_SUBSCRIPTION &&
+                    code in PERMANENT_SUBSCRIPTION_RECOVERY_ERROR_CODES) } == true
     }
 
     private suspend fun defer(
@@ -1447,6 +1474,12 @@ internal class StoreV2Coordinator(
             "APP_MISMATCH",
             "INVALID_PURCHASE",
             "PRODUCT_MISMATCH",
+        )
+        private val PERMANENT_SUBSCRIPTION_RECOVERY_ERROR_CODES = setOf(
+            "SUBSCRIPTION_NOT_LINKED",
+            "SUBSCRIPTION_OWNER_MISMATCH",
+            "SUBSCRIPTION_EVIDENCE_INVALID",
+            "SUBSCRIPTION_BINDING_INVALID",
         )
         private val SAFE_DIAGNOSTIC_PATTERN =
             Regex("(?:(?:[A-Za-z0-9_.-])|(?:<redacted>)){1,128}")

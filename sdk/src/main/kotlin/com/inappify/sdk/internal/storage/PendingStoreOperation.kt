@@ -4,6 +4,8 @@ package com.inappify.sdk.internal.storage
 internal enum class PendingStoreOperationType {
     PURCHASE,
     RESTORE,
+    /** An unbound Bazaar subscription receipt; ownership must be resolved by the server. */
+    RECOVER_SUBSCRIPTION,
 }
 
 /** Durable checkpoints in the server-authoritative store purchase workflow. */
@@ -202,6 +204,15 @@ internal data class PendingStoreOperation(
         }
         require(createdAtEpochMillis >= 0L) { "Creation time must not be negative." }
         require(updatedAtEpochMillis >= 0L) { "Update time must not be negative." }
+        if (operation == PendingStoreOperationType.RECOVER_SUBSCRIPTION) {
+            require(store == "bazar" && productType == PendingStoreProductType.SUBSCRIPTION)
+            require(offeringIdentifier == null && evidence.developerPayload.isNullOrBlank())
+            require(evidence.packageName == appIdentifier && appId != null && appId > 0L)
+            require(!evidence.originalJson.isNullOrBlank() && !evidence.signature.isNullOrBlank())
+            require(evidence.purchaseTimeMillis != null && evidence.purchaseTimeMillis > 0L)
+            require(phase in setOf(PendingStoreOperationPhase.REGISTERING, PendingStoreOperationPhase.VERIFYING))
+            require(deliveryId == null && !deliveryAcknowledged && consumeResult == null && consumeErrorCode == null)
+        }
     }
 
     override fun toString(): String =

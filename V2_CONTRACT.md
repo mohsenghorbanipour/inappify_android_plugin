@@ -33,6 +33,12 @@ subscription query before reconciliation. Explicit conflicting/malformed types
 and account/app bindings remain checked; unknown in-app receipts keep their
 server delivery/consume workflow. No receipt evidence or V2 wire field is changed.
 
+Staged payloadless Bazaar subscription recovery is implemented behind
+`InappifyOptions.enableSubscriptionRecoveryWithoutPayload` (default false).
+It requires the separate commerce route and ownership contract documented in
+[SUBSCRIPTION_RECOVERY.md](docs/SUBSCRIPTION_RECOVERY.md). Never enable before the
+Laravel counterpart is deployed; ordinary binding checks are not relaxed.
+
 Automated evidence covers synthetic HTTP, lifecycle, storage, billing adapter,
 market binding, targeting serialization and build integration. Instrumentation
 compilation is distinct from execution. Live marketplace/backend acceptance is
