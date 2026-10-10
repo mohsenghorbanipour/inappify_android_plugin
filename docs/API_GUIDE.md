@@ -1,4 +1,4 @@
-# Android API and behavior guide (3.2.0)
+# Android API and behavior guide (3.3.0)
 
 Both client factories return V2. Keep one authoritative application-scoped
 client, handle `InappifyResult.Success`/`Failure`, and render only its current
@@ -40,7 +40,7 @@ token into a user ID.
 `customerInfo` and `offerings` support `CACHE_ONLY`, `CACHE_FIRST`,
 `NETWORK_FIRST`, `NETWORK_ONLY`; failures do not manufacture verified state.
 Relevant targeting/identity changes invalidate Offerings. Current offering and
-placement selection come from the server. Version 3 sends SDK version `3.2.0`,
+placement selection come from the server. Version 3 sends SDK version `3.3.0`,
 independently of host app version. Old force-version state is not used by V2.
 
 ## Attributes and targeting sync
@@ -99,6 +99,15 @@ distinguish consumables from non-consumables, so an omitted type retains the
 existing unknown in-app server workflow. An explicitly conflicting type remains
 invalid. Other payload/app/account guards still apply; this does not import V1
 receipts that lack the existing V2 recovery binding.
+
+New Bazaar/Myket purchases include `purchaseBinding` in their developer payload.
+It binds the verified app ID, Android package name, SHA-256 of the public
+app-user identifier, product identifier, offering identifier and selected native
+package identifier. Values use UTF-8 byte-length prefixes before SHA-256, with a
+versioned `v1:` result. This is a binding format version, not a V1 API route.
+Recovery validates this field when present and forwards the original evidence
+unchanged. Receipts without it retain all existing recovery guards. No new
+public method or Flutter channel argument is required.
 
 Pending journal operations always continue regardless of that comparison.
 Consumable/unknown in-app receipts also continue through the server workflow;

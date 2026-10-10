@@ -1,7 +1,7 @@
-# Myket integration (3.2.0)
+# Myket integration (3.3.0)
 
-Version 3.2.0 supports Myket alongside Direct/Bazaar through the V2-only client.
-Use the `3.2.0` dependency in the
+Version 3.3.0 supports Myket alongside Direct/Bazaar through the V2-only client.
+Use the `3.3.0` dependency in the
 [installation guide](../README.md#installation).
 
 ## Application setup

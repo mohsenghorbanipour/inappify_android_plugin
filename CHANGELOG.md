@@ -1,5 +1,22 @@
 # Changelog
 
+## [3.3.0] - 2026-10-10
+
+- Add a versioned purchase binding to new Bazaar/Myket developer payloads. Bind
+  the verified app, Android package, customer, product, offering and selected
+  package using the shared UTF-8 byte-length hash contract. Validate the binding
+  when recovering receipts that contain it; older bound receipts retain their
+  existing recovery path and signed evidence is never rewritten.
+- Preserve public APIs, MethodChannel, session authentication, V2 routes and
+  durable purchase journals. Report the exact runtime version `3.3.0`.
+- Keep Gradle 8.7, Kotlin 1.9, compileSdk 34 and the compatible AGP/AndroidX/
+  OkHttp versions; defer incompatible automated upgrades from main. Update the
+  isolated BouncyCastle verifier dependency to 1.86.
+- Verification: 416 JVM tests in 32 suites, zero failures/errors/skips; all
+  95 build/publication tasks pass. Release lint has zero errors and one existing
+  receiver warning. Instrumentation compiles; live store/backend acceptance
+  remains pending.
+
 ## [3.2.0] - 2026-10-07
 
 - Recover bound subscription receipts whose older developer payload omits or
